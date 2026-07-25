@@ -1,0 +1,66 @@
+name: Build unsigned iOS ipa
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Read version and set build number
+        id: ver
+        run: |
+          VERSION=$(node -p "require('./app.json').expo.version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync('app.json'));j.expo.ios.buildNumber='${{ github.run_number }}';fs.writeFileSync('app.json',JSON.stringify(j,null,2));"
+
+      - name: Generate native iOS project
+        run: npx expo prebuild --platform ios
+
+      - name: Build unsigned archive
+        run: |
+          WORKSPACE=$(ls -d ios/*.xcworkspace | head -n 1)
+          SCHEME=$(basename "$WORKSPACE" .xcworkspace)
+          xcodebuild -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath ios/build/app.xcarchive \
+            archive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM=""
+
+      - name: Package ipa
+        run: |
+          mkdir -p ios/build/Payload
+          cp -R ios/build/app.xcarchive/Products/Applications/*.app ios/build/Payload/
+          cd ios/build
+          zip -qry "ParksPJT1-v${{ steps.ver.outputs.version }}-build${{ github.run_number }}.ipa" Payload
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}-build${{ github.run_number }}
+          name: v${{ steps.ver.outputs.version }} (build ${{ github.run_number }})
+          body: |
+            Unsigned ipa — SideStore/AltStore로 설치하세요.
+            커밋: ${{ github.event.head_commit.message }}
+          prerelease: true
+          files: ios/build/*.ipa
