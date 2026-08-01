@@ -41,3 +41,7 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Orca가 저장소 안에 만드는 worktree 체크아웃
+/phase1-backend
+/phase1-client
