@@ -1,0 +1,222 @@
+import { UPLOAD_LIMITS } from '@/lib/config';
+import { supabase } from '@/lib/supabase';
+import { completeUpload, createUploadSession, failUpload } from '@/storage/client';
+import { backoffMs, isRetryable, needsReconnect, userMessage } from '@/storage/errors';
+import { uploadResumable } from '@/storage/uploadResumable';
+
+import {
+  clearCompletedItems,
+  deleteQueueItem,
+  enqueueItem,
+  getAllItemsForSpace,
+  getDatabase,
+  getPendingItems,
+  resetUploadingToPending,
+  updateItemStatus,
+  UploadQueueItem,
+  UploadQueueStatus,
+} from './db';
+
+type QueueListener = (items: UploadQueueItem[]) => void;
+
+class QueueManager {
+  private activeCount = 0;
+  private isPaused = false;
+  private listeners: Set<QueueListener> = new Set();
+  private initialized = false;
+
+  async init() {
+    if (this.initialized) return;
+    this.initialized = true;
+    await getDatabase();
+    // 앱 재시작 시 기존 'uploading' 상태였던 항목을 'pending'으로 복구하여 재개 가능하게 함
+    await resetUploadingToPending();
+    this.processQueue();
+  }
+
+  subscribe(listener: QueueListener): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private async notifyListeners(spaceId?: string) {
+    if (!spaceId) return;
+    const items = await getAllItemsForSpace(spaceId);
+    this.listeners.forEach((fn) => fn(items));
+  }
+
+  pause() {
+    this.isPaused = true;
+  }
+
+  resume() {
+    this.isPaused = false;
+    this.processQueue();
+  }
+
+  async enqueue(input: {
+    spaceId: string;
+    folderId: string | null;
+    localId?: string | null;
+    fileUri: string;
+    originalName: string;
+    mimeType: string;
+    byteSize: number;
+    capturedAt?: number | null;
+    kind: 'image' | 'video';
+    source?: 'manual' | 'auto';
+  }): Promise<UploadQueueItem> {
+    await this.init();
+    const item = await enqueueItem({
+      space_id: input.spaceId,
+      folder_id: input.folderId,
+      local_id: input.localId ?? null,
+      file_uri: input.fileUri,
+      original_name: input.originalName,
+      mime_type: input.mimeType,
+      byte_size: input.byteSize,
+      captured_at: input.capturedAt ?? null,
+      quick_hash: null,
+      source: input.source ?? 'manual',
+    });
+
+    await this.notifyListeners(input.spaceId);
+    this.processQueue();
+    return item;
+  }
+
+  async retryItem(id: string, spaceId: string) {
+    await updateItemStatus(id, 'pending', { attempts: 0, last_error: null });
+    await this.notifyListeners(spaceId);
+    this.processQueue();
+  }
+
+  async removeItem(id: string, spaceId: string) {
+    await deleteQueueItem(id);
+    await this.notifyListeners(spaceId);
+  }
+
+  async clearCompleted(spaceId: string) {
+    await clearCompletedItems(spaceId);
+    await this.notifyListeners(spaceId);
+  }
+
+  private async processQueue() {
+    if (this.isPaused) return;
+    if (this.activeCount >= UPLOAD_LIMITS.concurrency) return;
+
+    const items = await getPendingItems(UPLOAD_LIMITS.concurrency - this.activeCount);
+    if (items.length === 0) return;
+
+    for (const item of items) {
+      if (this.activeCount >= UPLOAD_LIMITS.concurrency) break;
+      this.activeCount++;
+      this.uploadItem(item).finally(() => {
+        this.activeCount--;
+        this.processQueue();
+      });
+    }
+  }
+
+  private async uploadItem(item: UploadQueueItem) {
+    await updateItemStatus(item.id, 'uploading');
+    await this.notifyListeners(item.space_id);
+
+    try {
+      let assetId = item.asset_id;
+      let uploadUrl = item.upload_url;
+
+      // 1. 업로드 세션 발급 (없는 경우)
+      if (!assetId || !uploadUrl) {
+        const kind = item.mime_type.startsWith('video') ? 'video' : 'image';
+        const sessionRes = await createUploadSession({
+          spaceId: item.space_id,
+          folderId: item.folder_id,
+          originalName: item.original_name,
+          mimeType: item.mime_type,
+          byteSize: item.byte_size,
+          capturedAt: item.captured_at ? new Date(item.captured_at).toISOString() : null,
+          kind,
+        });
+
+        assetId = sessionRes.assetId;
+        uploadUrl = sessionRes.uploadUrl;
+        await updateItemStatus(item.id, 'uploading', {
+          asset_id: assetId,
+          upload_url: uploadUrl,
+        });
+      }
+
+      if (!uploadUrl) {
+        throw new Error('업로드 세션 URL을 발급받지 못했습니다.');
+      }
+
+      // 2. 바이트 업로드 (50MB 이하 단일 PUT, 50MB 초과 청크)
+      const uploadRes = await uploadResumable({
+        uploadUrl,
+        fileUri: item.file_uri,
+        mimeType: item.mime_type,
+        byteSize: item.byte_size,
+        onProgress: async (sent, total) => {
+          await updateItemStatus(item.id, 'uploading', { bytes_sent: sent });
+          await this.notifyListeners(item.space_id);
+        },
+      });
+
+      // 3. 썸네일 업로드 시도 (이미지인 경우)
+      let thumbUploaded = false;
+      if (item.mime_type.startsWith('image')) {
+        try {
+          const thumbBlob = await (await fetch(item.file_uri)).blob();
+          const thumbPath = `thumbnails/${item.space_id}/${assetId}.jpg`;
+          const { error: thumbErr } = await supabase.storage
+            .from('thumbnails')
+            .upload(thumbPath, thumbBlob, { contentType: 'image/jpeg', upsert: true });
+
+          if (!thumbErr) thumbUploaded = true;
+        } catch {
+          /* 썸네일 실패는 원본 업로드를 막지 않음 */
+        }
+      }
+
+      // 4. 업로드 완료 보고
+      await completeUpload(assetId, uploadRes.remoteFileId, thumbUploaded);
+      await updateItemStatus(item.id, 'done', { bytes_sent: item.byte_size });
+      await this.notifyListeners(item.space_id);
+    } catch (err: any) {
+      const isNeedReconnect = needsReconnect(err);
+      const isRetry = isRetryable(err);
+      const attempts = item.attempts + 1;
+      const msg = userMessage(err) || err?.message || '업로드 중 오류 발생';
+
+      if (isNeedReconnect) {
+        this.isPaused = true;
+        await updateItemStatus(item.id, 'paused', {
+          attempts,
+          last_error: msg,
+        });
+      } else if (isRetry && attempts < UPLOAD_LIMITS.maxAttempts) {
+        const delay = backoffMs(attempts);
+        await updateItemStatus(item.id, 'pending', {
+          attempts,
+          last_error: msg,
+        });
+        setTimeout(() => this.processQueue(), delay);
+      } else {
+        if (item.asset_id) {
+          await failUpload(item.asset_id, err?.code || 'UPLOAD_FAILED');
+        }
+        await updateItemStatus(item.id, 'failed', {
+          attempts,
+          last_error: msg,
+        });
+      }
+
+      await this.notifyListeners(item.space_id);
+    }
+  }
+}
+
+export const queueManager = new QueueManager();

@@ -1,19 +1,27 @@
-import { StyleSheet, Text, View } from 'react-native';
+import { Redirect } from 'expo-router';
+import React from 'react';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
+import { useAuth } from '@/auth';
 import { colors, spacing, typography } from '@/lib/theme';
 
-/**
- * Phase 1 진입점 자리표시자.
- * 다음 작업에서 세션 상태를 보고 (auth)/sign-in 또는 (app)/spaces로 리다이렉트하도록 교체한다.
- */
 export default function Index() {
-  return (
-    <View style={styles.container}>
-      <Text style={typography.title}>가족 앨범</Text>
-      <Text style={[typography.caption, styles.gap]}>Phase 1 스캐폴딩 진행 중</Text>
-      <Text style={[typography.caption, styles.gap]}>Google 드라이브 · 중첩 폴더 · 실시간</Text>
-    </View>
-  );
+  const { session, isLoading } = useAuth();
+
+  if (isLoading) {
+    return (
+      <View style={styles.container}>
+        <ActivityIndicator size="large" color={colors.primary} />
+        <Text style={[typography.caption, styles.gap]}>세션 확인 중...</Text>
+      </View>
+    );
+  }
+
+  if (!session) {
+    return <Redirect href="/(auth)/login" />;
+  }
+
+  return <Redirect href="/(app)/spaces" />;
 }
 
 const styles = StyleSheet.create({
@@ -24,5 +32,5 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: spacing.lg,
   },
-  gap: { marginTop: spacing.sm },
+  gap: { marginTop: spacing.md },
 });
