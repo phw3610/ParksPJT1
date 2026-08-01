@@ -108,8 +108,12 @@ jobs:
           name: ipa
           path: ios/build/*.ipa
 
+  # 안드로이드는 푸시할 때마다 돌리지 않는다. 사용자는 iOS 기기만 쓰고,
+  # gradle 빌드가 iOS보다 오래 걸려 반복 개발을 느리게 만든다.
+  # 필요할 때 Actions 탭에서 "Run workflow"로 수동 실행한다.
   build-android:
     needs: version
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -151,6 +155,8 @@ jobs:
 
   release:
     needs: [version, build-ios, build-android]
+    # build-android가 skipped여도 릴리스는 진행한다. iOS 실패는 릴리스하지 않는다.
+    if: always() && needs.build-ios.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -165,7 +171,7 @@ jobs:
           name: v${{ needs.version.outputs.version }} (build ${{ needs.version.outputs.build }})
           body: |
             **iOS** — unsigned ipa. SideStore/AltStore로 설치하세요.
-            **Android** — debug 키로 서명된 release apk. 그대로 설치됩니다.
+            **Android** — apk는 수동 실행(Run workflow) 때만 포함됩니다.
 
             커밋: ${{ github.event.head_commit.message }}
           prerelease: true
