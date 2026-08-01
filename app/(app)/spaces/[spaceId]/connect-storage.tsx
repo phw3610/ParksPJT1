@@ -11,25 +11,38 @@ import {
 } from 'react-native';
 
 import { useAuth } from '@/auth';
-import type { StorageConnection } from '@/lib/database.types';
+import type { MemberRole, StorageConnection } from '@/lib/database.types';
 import { supabase } from '@/lib/supabase';
 import { colors, radius, spacing, typography } from '@/lib/theme';
 import { connectGoogleDrive, disconnectStorage } from '@/storage/client';
 
 export default function ConnectStorageScreen() {
   const { spaceId } = useLocalSearchParams<{ spaceId: string }>();
-  const { getGoogleServerAuthCode } = useAuth();
+  const { user, getGoogleServerAuthCode } = useAuth();
   const router = useRouter();
 
   const [connection, setConnection] = useState<StorageConnection | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [userRole, setUserRole] = useState<MemberRole | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isConnecting, setIsConnecting] = useState(false);
 
   const fetchConnection = useCallback(async (): Promise<StorageConnection | null> => {
-    if (!spaceId) return null;
+    if (!spaceId || !user) return null;
     setIsLoading(true);
     try {
+      // 1. Fetch user role
+      const { data: memberData } = await (supabase.from('space_members') as any)
+        .select('role')
+        .eq('space_id', spaceId)
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      if (memberData) {
+        setUserRole(memberData.role);
+      }
+
+      // 2. Fetch storage connection
       const { data, error } = await supabase
         .from('storage_connections')
         .select(
@@ -53,7 +66,7 @@ export default function ConnectStorageScreen() {
     } finally {
       setIsLoading(false);
     }
-  }, [spaceId]);
+  }, [spaceId, user]);
 
   useEffect(() => {
     void fetchConnection().catch(() => undefined);
@@ -61,6 +74,10 @@ export default function ConnectStorageScreen() {
 
   const handleConnectDrive = async () => {
     if (!spaceId) return;
+    if (userRole !== 'owner') {
+      Alert.alert('권한 없음', '스토리지 연결은 앨범 소유자(Owner)만 가능합니다.');
+      return;
+    }
     setIsConnecting(true);
     try {
       const serverAuthCode = await getGoogleServerAuthCode();
@@ -79,6 +96,10 @@ export default function ConnectStorageScreen() {
 
   const handleDisconnect = async () => {
     if (!spaceId) return;
+    if (userRole !== 'owner') {
+      Alert.alert('권한 없음', '스토리지 연결 해제는 앨범 소유자(Owner)만 가능합니다.');
+      return;
+    }
     Alert.alert('저장소 연결 해제', '저장소 연결을 해제하시겠습니까? 원본 파일은 삭제되지 않습니다.', [
       { text: '취소', style: 'cancel' },
       {
@@ -96,6 +117,26 @@ export default function ConnectStorageScreen() {
       },
     ]);
   };
+
+  // Guard for non-owner users
+  if (!isLoading && userRole && userRole !== 'owner') {
+    return (
+      <View style={styles.guardContainer}>
+        <View style={styles.guardCard}>
+          <Text style={typography.heading}>🔒 권한 제한</Text>
+          <Text style={[typography.body, styles.guardText]}>
+            스토리지 연결 및 관리 권한은 앨범 소유자(Owner)에게만 부여됩니다.
+          </Text>
+          <TouchableOpacity
+            style={styles.doneBtn}
+            onPress={() => router.replace(`/(app)/spaces/${spaceId}`)}
+          >
+            <Text style={styles.doneBtnText}>앨범 홈으로 돌아가기</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -201,6 +242,24 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: spacing.md,
+  },
+  guardContainer: {
+    flex: 1,
+    backgroundColor: colors.bg,
+    padding: spacing.lg,
+    justifyContent: 'center',
+  },
+  guardCard: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderWidth: 1,
+    borderRadius: radius.md,
+    padding: spacing.lg,
+    alignItems: 'center',
+  },
+  guardText: {
+    marginVertical: spacing.md,
+    textAlign: 'center',
   },
   subText: {
     marginTop: spacing.xs,
@@ -313,9 +372,11 @@ const styles = StyleSheet.create({
   doneBtn: {
     backgroundColor: colors.surfaceAlt,
     paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
     borderRadius: radius.md,
     alignItems: 'center',
     marginBottom: spacing.xl,
+    width: '100%',
   },
   doneBtnText: {
     color: colors.text,

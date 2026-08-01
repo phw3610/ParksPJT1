@@ -29,11 +29,21 @@ export default function MembersScreen() {
 
   const [members, setMembers] = useState<MemberItem[]>([]);
   const [currentUserRole, setCurrentUserRole] = useState<MemberRole | null>(null);
+  const [spaceName, setSpaceName] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
 
   const fetchMembers = async () => {
     if (!spaceId || !user) return;
     try {
+      // Fetch space name
+      const { data: spaceData } = await (supabase.from('spaces') as any)
+        .select('name')
+        .eq('id', spaceId)
+        .maybeSingle();
+
+      if (spaceData) setSpaceName(spaceData.name);
+
+      // Fetch members
       const { data: memberData, error } = await supabase
         .from('space_members')
         .select('user_id, role, joined_at, profiles(display_name)')
@@ -105,6 +115,36 @@ export default function MembersScreen() {
     ]);
   };
 
+  const handleLeaveSpace = async () => {
+    if (!spaceId || !user) return;
+    Alert.alert(
+      '앨범 나가기',
+      `'${spaceName || '이 앨범'}'에서 나가시겠습니까?\n\n※ 앨범에서 나가더라도 본인이 올린 사진과 Google 드라이브의 원본 파일은 삭제되지 않고 안전하게 보관됩니다. 다시 참여하려면 가족에게 새로운 초대 코드를 받아야 합니다.`,
+      [
+        { text: '취소', style: 'cancel' },
+        {
+          text: '나가기',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const { error } = await supabase
+                .from('space_members')
+                .delete()
+                .eq('space_id', spaceId)
+                .eq('user_id', user.id);
+
+              if (error) throw error;
+              Alert.alert('완료', '앨범에서 나갔습니다.');
+              router.replace('/(app)/spaces');
+            } catch (e: any) {
+              Alert.alert('나가기 실패', e.message || '앨범에서 나가지 못했습니다.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const getRoleLabel = (role: MemberRole) => {
     switch (role) {
       case 'owner':
@@ -121,6 +161,7 @@ export default function MembersScreen() {
   };
 
   const isCanManage = currentUserRole === 'owner' || currentUserRole === 'admin';
+  const isOwner = currentUserRole === 'owner';
 
   return (
     <View style={styles.container}>
@@ -147,7 +188,7 @@ export default function MembersScreen() {
           contentContainerStyle={styles.listContent}
           renderItem={({ item }) => {
             const isSelf = item.user_id === user?.id;
-            const isOwner = item.role === 'owner';
+            const isItemOwner = item.role === 'owner';
 
             return (
               <View style={styles.memberCard}>
@@ -160,7 +201,7 @@ export default function MembersScreen() {
                   </View>
                 </View>
 
-                {isCanManage && !isOwner && !isSelf && (
+                {isCanManage && !isItemOwner && !isSelf && (
                   <View style={styles.actions}>
                     <TouchableOpacity
                       style={styles.actionBtn}
@@ -187,6 +228,13 @@ export default function MembersScreen() {
               </View>
             );
           }}
+          ListFooterComponent={
+            !isOwner && currentUserRole ? (
+              <TouchableOpacity style={styles.leaveSpaceBtn} onPress={handleLeaveSpace}>
+                <Text style={styles.leaveSpaceBtnText}>🚪 앨범 나가기</Text>
+              </TouchableOpacity>
+            ) : null
+          }
         />
       )}
     </View>
@@ -277,6 +325,20 @@ const styles = StyleSheet.create({
   kickBtnText: {
     color: colors.danger,
     fontSize: 12,
+    fontWeight: '600',
+  },
+  leaveSpaceBtn: {
+    marginTop: spacing.lg,
+    backgroundColor: 'rgba(248, 113, 113, 0.15)',
+    borderColor: 'rgba(248, 113, 113, 0.3)',
+    borderWidth: 1,
+    paddingVertical: spacing.md,
+    borderRadius: radius.md,
+    alignItems: 'center',
+  },
+  leaveSpaceBtnText: {
+    color: colors.danger,
+    fontSize: 14,
     fontWeight: '600',
   },
 });
