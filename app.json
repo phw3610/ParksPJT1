@@ -2,6 +2,7 @@
   "expo": {
     "name": "가족 앨범",
     "slug": "ParksPJT1",
+    "owner": "parkhouse",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -12,7 +13,11 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.phw3610.parkspjt1",
       "infoPlist": {
-        "UIBackgroundModes": ["processing", "fetch", "remote-notification"]
+        "UIBackgroundModes": [
+          "processing",
+          "fetch",
+          "remote-notification"
+        ]
       }
     },
     "android": {
@@ -24,9 +29,17 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "permissions": [
-        "READ_MEDIA_IMAGES",
-        "READ_MEDIA_VIDEO",
-        "ACCESS_NETWORK_STATE"
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.ACCESS_MEDIA_LOCATION",
+        "android.permission.ACCESS_NETWORK_STATE"
+      ],
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_MEDIA_AUDIO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
       ]
     },
     "web": {
@@ -61,6 +74,12 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "96739e12-9065-4d7c-823b-38125a4cdbbd"
+      }
     }
   }
 }
