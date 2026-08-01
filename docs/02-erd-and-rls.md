@@ -210,10 +210,18 @@ begin
   return null;
 end $$;
 
+-- `after update of path`로 두면 안 된다. PostgreSQL의 `UPDATE OF <컬럼>`은
+-- UPDATE 문의 SET 절에 그 컬럼이 적혀 있는지로 발화를 판정하며, BEFORE 트리거가
+-- 값을 바꿨는지는 보지 않는다. 클라이언트는 `SET name = ...`만 보내므로
+-- path가 SET 절에 없고 트리거가 영원히 발화하지 않는다 (실측으로 체크 #13 실패 확인).
 create trigger folders_cascade_path_trg
-  after update of path on folders
+  after update on folders
   for each row execute function folders_cascade_path();
 ```
+
+함수 안의 `if new.path is distinct from old.path` 가드가 있으므로 모든 UPDATE에 발화시켜도
+불필요한 작업은 없다. 자손 갱신이 트리거를 다시 발화시키지만 항상 트리 아래로만 내려가고
+값이 같아진 뒤에는 가드에 걸려 멈추므로 깊이만큼만 돈다.
 
 ### 2.6 assets
 
@@ -719,13 +727,13 @@ create policy thumbs_delete on storage.objects for delete
 
 | # | 테스트 | 기대 |
 |---|---|---|
-| 1 | 비멤버가 `select * from assets` | 0행 |
+| 1 | **인증된** 비멤버가 `select * from assets` | 0행 |
 | 2 | 비멤버가 스페이스 UUID를 알고 조회 | 0행 |
-| 3 | Viewer가 asset insert | 정책 위반 오류 |
-| 4 | Member가 남의 asset 삭제 | 정책 위반 오류 |
+| 3 | Viewer가 asset insert | 정책 위반 오류 (`42501`) |
+| 4 | Member가 남의 asset 삭제 | **오류 없이 0행**, 자산 생존 |
 | 5 | Admin이 남의 asset 삭제 | 성공 |
-| 6 | Admin이 Owner를 강퇴 | 정책 위반 오류 |
-| 7 | Admin이 자신을 owner로 update | 정책 위반 오류 |
+| 6 | Admin이 Owner를 강퇴 | **오류 없이 0행**, owner 유지 |
+| 7 | Admin이 자신을 owner로 update | 정책 위반 오류 (`42501`) |
 | 8 | 멤버가 `select vault_secret_id from storage_connections` | 컬럼 권한 오류 |
 | 9 | 멤버가 `select token_hash from invites` | 컬럼 권한 오류 |
 | 10 | 만료된 토큰으로 `accept_invite` | `INVITE_INVALID` |
@@ -743,8 +751,32 @@ create policy thumbs_delete on storage.objects for delete
 
 이 21개는 Phase 1 완료 게이트다. 하나라도 실패하면 배포하지 않는다.
 
-> 16~18은 나중에 추가했다. 원래 15개는 **경로가 아예 없는 것**을 잡지 못했다.
+**2026-08-01 실측 결과: 21개 중 20개 통과, #14는 부분.**
+테스트 계정 2개로 스페이스 생성 → 초대 발급 → 수락 → 역할 변경 → 탈퇴까지 실제로 태웠다
+(마이그레이션 0001~0005 적용 상태). #14는 웹소켓을 붙이지 않아 미검증이지만,
+탈퇴 직후 `spaces`·`folders`가 전부 0행이 되는 것은 확인했다. Realtime은 이 RLS를 따른다.
+
+### 검증할 때 반드시 알아둘 것
+
+**DELETE·UPDATE는 RLS가 오류를 내지 않는다.** `USING` 절에 걸린 행은 그냥 매칭되지
+않으므로 **오류 없이 0행**이 반환된다. 오류(`42501`)가 나는 건 INSERT와 UPDATE의
+`WITH CHECK`뿐이다. #4·#6을 "정책 위반 오류"로 적어뒀던 것은 틀렸다.
+**반드시 대상 행이 실제로 살아남았는지 다시 조회해서 확인해라.**
+
+**PostgREST 기본값 `Prefer: return=representation`은 진짜 오류를 가린다.**
+`spaces` insert가 `403 RLS 위반`으로 보였지만 실제 원인은 `23503 FK 위반`이었다.
+원인을 파악할 땐 `Prefer: return=minimal`로 다시 보내라.
+
+**빈 테이블에서 나오는 `[]`는 검증이 아니다.** 행이 없으면 정책 식이 평가조차 되지 않는다.
+"정책이 막았다"와 "데이터가 없다"를 구분할 수 없으므로, 반드시 데이터를 넣고 확인해라.
+
+**anon(미인증)은 `42501 permission denied for function is_space_member`를 받는다.**
+0002에서 헬퍼 함수의 `PUBLIC` 실행 권한을 회수했기 때문이다. 차단 자체는 정상이고
+유출도 없지만 깔끔한 0행이 아니라 오류다. #1은 **인증된** 비멤버로 판정해라.
+
+> 16~21은 나중에 추가했다. 원래 15개는 **경로가 아예 없는 것**을 잡지 못했다.
 > 스페이스를 만들면 생성자가 자기 스페이스를 볼 수 없었고(owner 행을 만들 경로 부재),
-> 초대는 `token_hash not null` 때문에 아예 발급이 불가능했다.
+> 초대는 `token_hash not null` 때문에 아예 발급이 불가능했으며,
+> 로그인해도 `profiles` 행이 없어 아무것도 할 수 없었다.
 > 정책이 "거부하는지"만 검사하고 "정상 경로가 실제로 뚫려 있는지"는 검사하지 않은 탓이다.
 

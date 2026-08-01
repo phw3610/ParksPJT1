@@ -17,8 +17,8 @@
 | 7. iOS 백그라운드 설계 | ✅ | `docs/04-background-upload.md` |
 | 8. 보안·RLS | ✅ | `docs/02-erd-and-rls.md` §3–6 |
 | 9. 프로젝트 구조 | ✅ | 아래 참조 |
-| 10. Phase 1 코드 | 🟡 작성 완료·런타임 미검증 | 아래 참조 |
-| 11. Phase별 완료 체크리스트 | 🟡 부분 | `docs/02` §7, `docs/04` §7 |
+| 10. Phase 1 코드 | 🟡 백엔드 DB 검증 완료 · 클라이언트 런타임 미검증 | 아래 참조 |
+| 11. Phase별 완료 체크리스트 | 🟡 RLS 20/21 통과, 클라이언트는 미착수 | `docs/02` §7, `docs/04` §7 |
 
 ### 확정 결정 (사용자 승인)
 - **Google Drive**: 계획대로 Phase 1 착수. 스토어 제출·프로덕션 OAuth 검수 **전** Google 서면 조회를 릴리즈 게이트로 둔다.
@@ -99,14 +99,27 @@ app/(auth)/, app/(app)/, app/invite/[token].tsx   docs/01 §5 플로우 전 화�
 
 ## 다음 작업 (순서대로)
 
-### A. 백엔드 실제 적용 — 아직 아무것도 실행되지 않았다
-1. Supabase 프로젝트 생성 → `.env` 채우기
-2. `0001_init.sql`을 실제 적용 (지금까지 단 한 번도 실행한 적 없다)
-3. `docs/02` §7의 **검증 체크리스트 21개**를 통과시킨다 (Phase 1 완료 게이트).
-   SQL은 눈으로만 재검토했고 `supabase db lint`조차 실행하지 못했다 (로컬 Postgres·Docker 부재).
-4. Google Cloud Console: Drive API 활성화, OAuth 클라이언트 3종(웹/iOS/Android) 생성,
-   동의 화면에 `drive.file` 스코프 등록
-5. `notify` 10분 배치를 발송할 DB Webhook + Scheduled Function(`mode=flush`) 설정
+### A. 백엔드 — ✅ 적용·검증 완료 (2026-08-01)
+
+Supabase 프로젝트 생성, `.env` 작성, 마이그레이션 `0001`~`0005` 적용 완료.
+**`docs/02` §7 체크리스트 21개 중 20개 실측 통과, #14는 부분** (웹소켓 미검증).
+테스트 계정 2개로 스페이스 생성 → 초대 발급 → 수락 → 역할 변경 → 탈퇴를 실제로 태웠다.
+
+적용 후에야 드러난 결함들 — 문서 검토로는 하나도 못 잡았다:
+
+| 마이그레이션 | 고친 것 |
+|---|---|
+| 0002 | 헬퍼 함수의 `revoke ... from anon`이 무효였다. `PUBLIC` 기본 권한이 남아 anon이 그대로 실행했다. `accept_invite`도 미인증 호출이 가능했다. |
+| 0003 | `profiles` 행을 만들 경로가 아예 없었다. 로그인해도 `spaces` insert가 FK 위반으로 막혔다. |
+| 0004 | `INSERT ... RETURNING`이 AFTER 트리거보다 먼저 평가돼 `.insert().select()`가 항상 403이었다. 앱에서 스페이스 생성이 100% 실패했다. |
+| 0005 | `after update **of path**`가 발화하지 않았다. 클라이언트는 `SET name`만 보내므로 cascade가 한 번도 안 돌았다(체크 #13 실패). |
+
+### A-2. 남은 백엔드 작업
+1. Google Cloud Console: Drive API 활성화, OAuth 클라이언트 3종(웹/iOS/Android) 생성,
+   동의 화면에 `drive.file` 스코프 등록 → `.env`의 `EXPO_PUBLIC_GOOGLE_*_CLIENT_ID` 채우기
+2. Edge Function 배포 (`supabase/functions/**`는 작성만 됐고 배포된 적 없다)
+3. `notify` 10분 배치를 발송할 DB Webhook + Scheduled Function(`mode=flush`) 설정
+4. `npx supabase gen types typescript`로 `database.types.ts` 교체
 
 ### B. 클라이언트 런타임 검증
 EAS 개발 빌드로 실기기에서 확인한다 (Expo Go 불가). Google Sign-In 네이티브 모듈,
@@ -114,7 +127,7 @@ EAS 개발 빌드로 실기기에서 확인한다 (Expo Go 불가). Google Sign-
 
 ### C. 릴리즈 전 필수
 - [ ] Google에 use case 서면 조회 후 회신 보관 (`docs/phase0` §0.2 H)
-- [ ] `docs/02` §7 RLS 검증 21개 전부 통과
+- [x] `docs/02` §7 RLS 검증 — 21개 중 20개 통과 (#14 Realtime 웹소켓만 미검증)
 - [ ] 개인정보처리방침에 썸네일 서버 보관 사실 명시
 - [ ] EAS 개발 빌드로 실기기 검증 (Expo Go 불가)
 
