@@ -15,6 +15,7 @@
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-native-google-signin/google-signin": "^16.1.4",
     "@supabase/supabase-js": "^2.111.0",
+    "babel-preset-expo": "~54.0.10",
     "expo": "~54.0.34",
     "expo-background-task": "~1.0.10",
     "expo-constants": "~18.0.13",
