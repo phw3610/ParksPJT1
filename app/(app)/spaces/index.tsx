@@ -289,13 +289,13 @@ export default function SpaceListScreen() {
           ListFooterComponent={
             <View style={styles.footerBtnRow}>
               <TouchableOpacity
-                style={styles.createBtn}
+                style={[styles.createBtn, styles.flexBtn]}
                 onPress={() => router.push('/(app)/spaces/create')}
               >
                 <Text style={styles.createBtnText}>+ 새 가족 앨범 만들기</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.createBtn, styles.joinBtn]}
+                style={[styles.createBtn, styles.joinBtn, styles.flexBtn]}
                 onPress={() => setShowJoinModal(true)}
               >
                 <Text style={styles.joinBtnText}>🔑 코드로 참여</Text>
@@ -449,12 +449,17 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   createBtn: {
-    flex: 1,
     backgroundColor: colors.primary,
     paddingVertical: spacing.md,
     paddingHorizontal: spacing.md,
     borderRadius: radius.md,
     alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+  },
+  flexBtn: {
+    flex: 1,
+    width: undefined,
   },
   createBtnText: {
     color: colors.primaryText,
