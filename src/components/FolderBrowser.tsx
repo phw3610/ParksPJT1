@@ -37,6 +37,8 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
   const router = useRouter();
 
   const [connection, setConnection] = useState<StorageConnection | null>(null);
+  /** 저장소 연결·해제는 sc_all 정책상 소유자만 가능하다. 안내 문구를 역할에 맞춰야 한다. */
+  const [isOwner, setIsOwner] = useState(false);
   const [currentFolder, setCurrentFolder] = useState<Folder | null>(null);
   const [subFolders, setSubFolders] = useState<Folder[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -60,7 +62,7 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
       if (userId) {
         const { data: membership, error: membershipError } = await supabase
           .from('space_members')
-          .select('space_id')
+          .select('space_id, role')
           .eq('space_id', spaceId)
           .eq('user_id', userId)
           .maybeSingle();
@@ -70,6 +72,7 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
           router.replace('/(app)/spaces');
           return;
         }
+        setIsOwner((membership as { role?: string }).role === 'owner');
       }
 
       // 1. Connection status
@@ -211,10 +214,21 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
 
   const handleUploadClick = async () => {
     if (!connection) {
-      Alert.alert('저장소 미연결', '사진을 올리려면 먼저 저장소를 연결해 주세요.', [
-        { text: '취소', style: 'cancel' },
-        { text: '연결하기', onPress: () => router.push(`/(app)/spaces/${spaceId}/connect-storage`) },
-      ]);
+      // 저장소 연결은 소유자만 가능하다. 비소유자에게 링크를 주면 막힌 화면으로 보내게 된다.
+      if (isOwner) {
+        Alert.alert('저장소 미연결', '사진을 올리려면 먼저 저장소를 연결해 주세요.', [
+          { text: '취소', style: 'cancel' },
+          {
+            text: '연결하기',
+            onPress: () => router.push(`/(app)/spaces/${spaceId}/connect-storage`),
+          },
+        ]);
+      } else {
+        Alert.alert(
+          '저장소 미연결',
+          '아직 저장소가 연결되지 않아 사진을 올릴 수 없어요.\n앨범 소유자에게 저장소 연결을 요청해 주세요.',
+        );
+      }
       return;
     }
 
@@ -259,16 +273,23 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
   return (
     <View style={styles.container}>
       {/* 1. Storage Disconnected Warning Banner */}
-      {!connection && (
-        <TouchableOpacity
-          style={styles.warningBanner}
-          onPress={() => router.push(`/(app)/spaces/${spaceId}/connect-storage`)}
-        >
-          <Text style={styles.warningText}>
-            ⚠️ 사진을 올리려면 저장소를 연결해 주세요 [연결하기]
-          </Text>
-        </TouchableOpacity>
-      )}
+      {!connection &&
+        (isOwner ? (
+          <TouchableOpacity
+            style={styles.warningBanner}
+            onPress={() => router.push(`/(app)/spaces/${spaceId}/connect-storage`)}
+          >
+            <Text style={styles.warningText}>
+              ⚠️ 사진을 올리려면 저장소를 연결해 주세요 [연결하기]
+            </Text>
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.warningBanner}>
+            <Text style={styles.warningText}>
+              ⚠️ 아직 저장소가 연결되지 않았어요. 앨범 소유자에게 요청해 주세요
+            </Text>
+          </View>
+        ))}
 
       {/* 2. Top Header / Actions Bar */}
       <View style={styles.headerBar}>
@@ -285,12 +306,8 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
           >
             <Text style={styles.iconBtnText}>👥 멤버</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.iconBtn}
-            onPress={() => router.push(`/(app)/spaces/${spaceId}/connect-storage`)}
-          >
-            <Text style={styles.iconBtnText}>⚙️ 설정</Text>
-          </TouchableOpacity>
+          {/* ⚙️ 설정(저장소 연결)은 스페이스 홈 헤더로 옮겼다. 소유자에게만 보여야 하는데
+              여기서는 역할과 무관하게 노출됐고, 하위 폴더에서도 중복으로 떴다. */}
         </View>
       </View>
 
