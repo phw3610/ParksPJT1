@@ -1,9 +1,31 @@
-import { Stack } from 'expo-router';
-import React from 'react';
+import { Stack, useRouter } from 'expo-router';
+import React, { useEffect } from 'react';
 
+import { useAuth } from '@/auth';
 import { colors } from '@/lib/theme';
+import {
+  listenNotificationResponses,
+  registerDeviceToken,
+  setupNotificationHandler,
+} from '@/notifications';
+
+setupNotificationHandler();
 
 export default function AppLayout() {
+  const { user } = useAuth();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (!user) return;
+
+    // 1. 디바이스 네이티브 푸시 토큰 등록
+    registerDeviceToken();
+
+    // 2. 알림 탭 응답 수신 리스너 등록
+    const cleanup = listenNotificationResponses(router);
+    return cleanup;
+  }, [user?.id, router]);
+
   return (
     <Stack
       screenOptions={{
