@@ -69,7 +69,9 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
       // 1. Connection status
       const { data: conn } = await supabase
         .from('storage_connections')
-        .select('*')
+        .select(
+          'id,space_id,provider,connected_by,account_label,root_folder_id,is_active,last_error,last_verified_at,created_at',
+        )
         .eq('space_id', spaceId)
         .eq('is_active', true)
         .maybeSingle();

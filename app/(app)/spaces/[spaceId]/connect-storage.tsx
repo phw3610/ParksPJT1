@@ -1,5 +1,5 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -22,31 +22,42 @@ export default function ConnectStorageScreen() {
   const router = useRouter();
 
   const [connection, setConnection] = useState<StorageConnection | null>(null);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isConnecting, setIsConnecting] = useState(false);
 
-  const fetchConnection = async () => {
-    if (!spaceId) return;
+  const fetchConnection = useCallback(async (): Promise<StorageConnection | null> => {
+    if (!spaceId) return null;
+    setIsLoading(true);
     try {
       const { data, error } = await supabase
         .from('storage_connections')
-        .select('*')
+        .select(
+          'id,space_id,provider,connected_by,account_label,root_folder_id,is_active,last_error,last_verified_at,created_at',
+        )
         .eq('space_id', spaceId)
         .eq('is_active', true)
         .maybeSingle();
 
       if (error) throw error;
       setConnection(data);
-    } catch {
-      /* 무시 */
+      setConnectionError(null);
+      return data;
+    } catch (error) {
+      const message =
+        typeof error === 'object' && error !== null && 'message' in error
+          ? String(error.message)
+          : '저장소 연결 상태를 불러오지 못했습니다.';
+      setConnectionError(message);
+      throw error;
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [spaceId]);
 
   useEffect(() => {
-    fetchConnection();
-  }, [spaceId]);
+    void fetchConnection().catch(() => undefined);
+  }, [fetchConnection]);
 
   const handleConnectDrive = async () => {
     if (!spaceId) return;
@@ -54,8 +65,11 @@ export default function ConnectStorageScreen() {
     try {
       const serverAuthCode = await getGoogleServerAuthCode();
       await connectGoogleDrive(spaceId, serverAuthCode);
+      const confirmedConnection = await fetchConnection();
+      if (!confirmedConnection) {
+        throw new Error('연결 정보를 확인하지 못했습니다. 잠시 후 다시 시도해 주세요.');
+      }
       Alert.alert('연결 성공', 'Google 드라이브가 연결되었습니다.');
-      await fetchConnection();
     } catch (e: any) {
       Alert.alert('연결 실패', e.message || 'Google 드라이브를 연결하지 못했습니다.');
     } finally {
@@ -74,7 +88,7 @@ export default function ConnectStorageScreen() {
           try {
             await disconnectStorage(spaceId, true);
             setConnection(null);
-            fetchConnection();
+            await fetchConnection();
           } catch (e: any) {
             Alert.alert('오류', e.message);
           }
@@ -89,6 +103,18 @@ export default function ConnectStorageScreen() {
       <Text style={[typography.caption, styles.subText]}>
         원본 사진은 선택한 저장소에만 보관되며, 앱 서버에는 저장되지 않습니다.
       </Text>
+
+      {connectionError && (
+        <View style={styles.loadErrorBanner}>
+          <Text style={styles.loadErrorText}>연결 상태 조회 실패: {connectionError}</Text>
+          <TouchableOpacity
+            onPress={() => void fetchConnection().catch(() => undefined)}
+            accessibilityRole="button"
+          >
+            <Text style={styles.retryText}>다시 시도</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {isLoading ? (
         <ActivityIndicator size="large" color={colors.primary} style={styles.loader} />
@@ -182,6 +208,24 @@ const styles = StyleSheet.create({
   },
   loader: {
     marginVertical: spacing.xl,
+  },
+  loadErrorBanner: {
+    marginBottom: spacing.md,
+    padding: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.danger,
+    borderRadius: radius.sm,
+    backgroundColor: 'rgba(248, 113, 113, 0.12)',
+  },
+  loadErrorText: {
+    color: colors.danger,
+    fontSize: 13,
+  },
+  retryText: {
+    marginTop: spacing.xs,
+    color: colors.primary,
+    fontSize: 13,
+    fontWeight: '600',
   },
   cardList: {
     gap: spacing.md,
