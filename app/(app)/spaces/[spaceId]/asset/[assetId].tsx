@@ -114,22 +114,29 @@ export default function AssetDetailScreen() {
   const handleDelete = async () => {
     if (!assetId || !spaceId) return;
 
-    Alert.alert('사진 삭제', '이 사진을 드라이브 휴지통으로 이동하시겠습니까?', [
-      { text: '취소', style: 'cancel' },
-      {
-        text: '삭제',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            await deleteAssets([assetId], true);
-            Alert.alert('삭제 완료', '사진이 휴지통으로 이동되었습니다.');
-            router.back();
-          } catch (e: any) {
-            Alert.alert('삭제 실패', e.message);
-          }
+    Alert.alert(
+      '사진 삭제',
+      '이 사진을 Google Drive 휴지통으로 옮길까요?\n앱 목록에서는 사라지며, 복구하려면 Google Drive에서 해야 합니다.',
+      [
+        { text: '취소', style: 'cancel' },
+        {
+          text: '삭제',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteAssets([assetId], true);
+              Alert.alert(
+                '삭제 완료',
+                '사진을 Google Drive 휴지통으로 옮겼어요.\n앱 목록에서는 사라졌으며, 복구하려면 Google Drive에서 복원해 주세요.',
+                [{ text: '확인', onPress: () => router.back() }],
+              );
+            } catch (e: any) {
+              Alert.alert('삭제 실패', e.message);
+            }
+          },
         },
-      },
-    ]);
+      ],
+    );
   };
 
   if (isLoading) {

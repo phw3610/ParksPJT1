@@ -1,6 +1,6 @@
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -21,6 +21,7 @@ import { supabase } from '@/lib/supabase';
 import { colors, radius, spacing, typography } from '@/lib/theme';
 import { queueManager } from '@/queue';
 import { useSpaceRealtime } from '@/realtime/useSpaceRealtime';
+import { deleteAssets } from '@/storage/client';
 import {
   createThumbnailSignedUrls,
   THUMBNAIL_URL_REFRESH_MS,
@@ -53,6 +54,7 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
 
   // Multi-select state
   const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(new Set());
+  const [isDeletingAssets, setIsDeletingAssets] = useState(false);
   const isMultiSelect = selectedAssetIds.size > 0;
   const realtimeRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -125,9 +127,11 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
     }
   }, [folderId, router, spaceId, userId]);
 
-  useEffect(() => {
-    void fetchData();
-  }, [fetchData]);
+  useFocusEffect(
+    useCallback(() => {
+      void fetchData();
+    }, [fetchData]),
+  );
 
   useEffect(() => {
     let isCancelled = false;
@@ -268,6 +272,41 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
     if (next.has(id)) next.delete(id);
     else next.add(id);
     setSelectedAssetIds(next);
+  };
+
+  const handleDeleteSelected = () => {
+    const assetIds = Array.from(selectedAssetIds);
+    if (assetIds.length === 0 || isDeletingAssets) return;
+
+    Alert.alert(
+      '사진 삭제',
+      `선택한 ${assetIds.length}장의 사진을 Google Drive 휴지통으로 옮길까요?\n앱 목록에서는 사라지며, 복구하려면 Google Drive에서 해야 합니다.`,
+      [
+        { text: '취소', style: 'cancel' },
+        {
+          text: '삭제',
+          style: 'destructive',
+          onPress: async () => {
+            setIsDeletingAssets(true);
+            try {
+              await deleteAssets(assetIds, true);
+              const deletedIds = new Set(assetIds);
+              setAssets((current) => current.filter((asset) => !deletedIds.has(asset.id)));
+              setSelectedAssetIds(new Set());
+              await fetchData();
+              Alert.alert(
+                '삭제 완료',
+                `${assetIds.length}장의 사진을 Google Drive 휴지통으로 옮겼어요.\n앱 목록에서는 사라졌으며, 복구하려면 Google Drive에서 복원해 주세요.`,
+              );
+            } catch (error: any) {
+              Alert.alert('삭제 실패', error?.message || '사진을 삭제하지 못했습니다.');
+            } finally {
+              setIsDeletingAssets(false);
+            }
+          },
+        },
+      ],
+    );
   };
 
   return (
@@ -426,6 +465,19 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
           <View style={styles.multiBtns}>
             <TouchableOpacity style={styles.multiBtn}>
               <Text style={styles.multiBtnText}>다운로드</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.multiBtn,
+                styles.multiDeleteBtn,
+                isDeletingAssets && styles.disabledBtn,
+              ]}
+              onPress={handleDeleteSelected}
+              disabled={isDeletingAssets}
+            >
+              <Text style={styles.multiDeleteText}>
+                {isDeletingAssets ? '삭제 중...' : '삭제'}
+              </Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.multiBtn, styles.cancelBtn]}
@@ -680,6 +732,14 @@ const styles = StyleSheet.create({
     color: colors.primaryText,
     fontWeight: '600',
     fontSize: 13,
+  },
+  multiDeleteBtn: {
+    backgroundColor: 'rgba(248, 113, 113, 0.2)',
+  },
+  multiDeleteText: {
+    color: colors.danger,
+    fontSize: 13,
+    fontWeight: '600',
   },
   cancelBtn: {
     backgroundColor: colors.surfaceAlt,
