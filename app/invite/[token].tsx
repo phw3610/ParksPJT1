@@ -1,3 +1,11 @@
+/**
+ * [주의 / 보존 경로]
+ * 현재 커스텀 도메인이 설정되어 있지 않아서 Universal Link / App Link가 동작하지 않습니다.
+ * 따라서 현재 앱은 '초대 코드' 방식(app/(app)/spaces/index.tsx의 '코드로 참여')을 사용합니다.
+ * 본 파일(app/invite/[token].tsx)은 추후 도메인 확보 및 Universal Link 설정 도입 시
+ * 웹/앱 딥링크 랜딩 경로로 활용하기 위해 삭제하지 않고 보존합니다.
+ */
+
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {

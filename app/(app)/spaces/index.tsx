@@ -22,6 +22,18 @@ interface SpaceWithRole extends Space {
   role: string;
 }
 
+export function normalizeInviteToken(input: string): string {
+  let token = input.trim();
+  // 1. URL 형태 전체를 붙여넣은 경우 처리 (예: https://domain.com/invite/abcdef...)
+  if (token.includes('/')) {
+    const parts = token.split('/').filter(Boolean);
+    token = parts[parts.length - 1] || token;
+  }
+  // 2. 내부 공백, 줄바꿈, 탭, 하이픈 제거
+  token = token.replace(/[\s\-]/g, '');
+  return token;
+}
+
 export default function SpaceListScreen() {
   const { user, signOut } = useAuth();
   const router = useRouter();
@@ -33,6 +45,11 @@ export default function SpaceListScreen() {
   const [editingSpace, setEditingSpace] = useState<SpaceWithRole | null>(null);
   const [renameInput, setRenameInput] = useState('');
   const [isUpdating, setIsUpdating] = useState(false);
+
+  // Join by code modal state
+  const [showJoinModal, setShowJoinModal] = useState(false);
+  const [joinCodeInput, setJoinCodeInput] = useState('');
+  const [isJoining, setIsJoining] = useState(false);
 
   const fetchSpaces = async () => {
     if (!user) return;
@@ -127,6 +144,45 @@ export default function SpaceListScreen() {
     );
   };
 
+  const handleJoinByCode = async () => {
+    const normalizedToken = normalizeInviteToken(joinCodeInput);
+    if (!normalizedToken) {
+      Alert.alert('알림', '초대 코드를 입력해 주세요.');
+      return;
+    }
+
+    setIsJoining(true);
+    try {
+      const { data: spaceId, error } = await (supabase.rpc as any)('accept_invite', {
+        p_token: normalizedToken,
+      });
+
+      if (error) {
+        if (error.message?.includes('INVITE_INVALID') || error.code === 'P0001') {
+          throw new Error('만료됐거나, 이미 사용 횟수를 다 썼거나, 잘못된 초대 코드입니다.');
+        } else if (error.message?.includes('AUTH_REQUIRED')) {
+          throw new Error('로그인이 필요합니다.');
+        } else {
+          throw new Error(error.message || '초대를 수락하지 못했습니다.');
+        }
+      }
+
+      if (!spaceId) {
+        throw new Error('스페이스 정보를 불러올 수 없습니다.');
+      }
+
+      setShowJoinModal(false);
+      setJoinCodeInput('');
+      Alert.alert('참여 완료!', '가족 앨범에 성공적으로 참여했습니다.');
+      fetchSpaces();
+      router.push(`/(app)/spaces/${spaceId}`);
+    } catch (e: any) {
+      Alert.alert('참여 실패', e.message || '초대를 수락하지 못했습니다.');
+    } finally {
+      setIsJoining(false);
+    }
+  };
+
   const getRoleLabel = (role: string) => {
     switch (role) {
       case 'owner':
@@ -159,14 +215,22 @@ export default function SpaceListScreen() {
         <View style={styles.emptyContainer}>
           <Text style={[typography.heading, styles.emptyTitle]}>아직 앨범이 없어요</Text>
           <Text style={[typography.caption, styles.emptySub]}>
-            가족 앨범을 만들어 초대해 보세요
+            가족 앨범을 만들거나 초대 코드로 참여해 보세요
           </Text>
-          <TouchableOpacity
-            style={styles.createBtn}
-            onPress={() => router.push('/(app)/spaces/create')}
-          >
-            <Text style={styles.createBtnText}>+ 새 가족 앨범 만들기</Text>
-          </TouchableOpacity>
+          <View style={styles.btnRow}>
+            <TouchableOpacity
+              style={styles.createBtn}
+              onPress={() => router.push('/(app)/spaces/create')}
+            >
+              <Text style={styles.createBtnText}>+ 새 가족 앨범 만들기</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.createBtn, styles.joinBtn]}
+              onPress={() => setShowJoinModal(true)}
+            >
+              <Text style={styles.joinBtnText}>🔑 코드로 참여</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       ) : (
         <FlatList
@@ -223,15 +287,69 @@ export default function SpaceListScreen() {
             );
           }}
           ListFooterComponent={
-            <TouchableOpacity
-              style={[styles.createBtn, styles.mtLg]}
-              onPress={() => router.push('/(app)/spaces/create')}
-            >
-              <Text style={styles.createBtnText}>+ 새 가족 앨범 만들기</Text>
-            </TouchableOpacity>
+            <View style={styles.footerBtnRow}>
+              <TouchableOpacity
+                style={styles.createBtn}
+                onPress={() => router.push('/(app)/spaces/create')}
+              >
+                <Text style={styles.createBtnText}>+ 새 가족 앨범 만들기</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.createBtn, styles.joinBtn]}
+                onPress={() => setShowJoinModal(true)}
+              >
+                <Text style={styles.joinBtnText}>🔑 코드로 참여</Text>
+              </TouchableOpacity>
+            </View>
           }
         />
       )}
+
+      {/* Join by Code Modal */}
+      <Modal visible={showJoinModal} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={typography.heading}>🔑 초대 코드로 참여</Text>
+            <Text style={[typography.caption, styles.modalSub]}>
+              전달받은 64자리 초대 코드를 입력하거나 붙여넣으세요.
+            </Text>
+
+            <TextInput
+              style={[styles.modalInput, styles.codeModalInput]}
+              placeholder="초대 코드 또는 링크 붙여넣기"
+              placeholderTextColor={colors.textMuted}
+              value={joinCodeInput}
+              onChangeText={setJoinCodeInput}
+              autoCapitalize="none"
+              autoCorrect={false}
+              multiline
+              numberOfLines={3}
+              autoFocus
+            />
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => {
+                  setShowJoinModal(false);
+                  setJoinCodeInput('');
+                }}
+              >
+                <Text style={styles.modalCancelText}>취소</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalConfirmBtn, isJoining && styles.disabledBtn]}
+                onPress={handleJoinByCode}
+                disabled={isJoining}
+              >
+                <Text style={styles.modalConfirmText}>
+                  {isJoining ? '참여 중...' : '참여하기'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* Rename Modal */}
       <Modal visible={!!editingSpace} transparent animationType="fade">
@@ -319,15 +437,37 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: spacing.xl,
   },
+  btnRow: {
+    flexDirection: 'column',
+    gap: spacing.sm,
+    width: '100%',
+    paddingHorizontal: spacing.md,
+  },
+  footerBtnRow: {
+    marginTop: spacing.md,
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
   createBtn: {
+    flex: 1,
     backgroundColor: colors.primary,
     paddingVertical: spacing.md,
-    paddingHorizontal: spacing.lg,
+    paddingHorizontal: spacing.md,
     borderRadius: radius.md,
     alignItems: 'center',
   },
   createBtnText: {
     color: colors.primaryText,
+    fontWeight: '600',
+    fontSize: 15,
+  },
+  joinBtn: {
+    backgroundColor: colors.surfaceAlt,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  joinBtnText: {
+    color: colors.text,
     fontWeight: '600',
     fontSize: 15,
   },
@@ -393,9 +533,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
-  mtLg: {
-    marginTop: spacing.md,
-  },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.6)',
@@ -424,6 +561,11 @@ const styles = StyleSheet.create({
     color: colors.text,
     marginTop: spacing.md,
     marginBottom: spacing.lg,
+  },
+  codeModalInput: {
+    minHeight: 70,
+    textAlignVertical: 'top',
+    fontSize: 13,
   },
   modalActions: {
     flexDirection: 'row',
