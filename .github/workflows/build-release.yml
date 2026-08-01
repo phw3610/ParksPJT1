@@ -1,0 +1,156 @@
+name: Build iOS ipa + Android apk
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # EXPO_PUBLIC_* 는 번들 시점에 코드에 인라인된다. 러너에 없으면 앱이 시작하자마자
+  # src/lib/config.ts의 required()에서 던진다. 저장소가 public이라 값은 Secrets에 둔다.
+  EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+  EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+  EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID: ${{ secrets.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID }}
+  EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID: ${{ secrets.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID }}
+  EXPO_PUBLIC_INVITE_BASE_URL: ${{ secrets.EXPO_PUBLIC_INVITE_BASE_URL }}
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: ver
+        run: |
+          VERSION=$(node -p "require('./app.json').expo.version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION-build${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Fail fast if EXPO_PUBLIC_* secrets are missing
+        run: |
+          missing=""
+          for v in EXPO_PUBLIC_SUPABASE_URL EXPO_PUBLIC_SUPABASE_ANON_KEY \
+                   EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID \
+                   EXPO_PUBLIC_INVITE_BASE_URL; do
+            [ -z "${!v}" ] && missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::누락된 GitHub Secrets:$missing"
+            echo "빌드해도 앱이 시작 시 config.ts에서 던진다. 저장소 Settings > Secrets and variables > Actions 에 등록할 것."
+            exit 1
+          fi
+
+  build-ios:
+    needs: version
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Set iOS build number
+        run: |
+          node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync('app.json'));j.expo.ios.buildNumber='${{ github.run_number }}';fs.writeFileSync('app.json',JSON.stringify(j,null,2));"
+
+      - name: Generate native iOS project
+        run: npx expo prebuild --platform ios
+
+      - name: Build unsigned archive
+        run: |
+          WORKSPACE=$(ls -d ios/*.xcworkspace | head -n 1)
+          SCHEME=$(basename "$WORKSPACE" .xcworkspace)
+          xcodebuild -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath ios/build/app.xcarchive \
+            archive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM=""
+
+      - name: Package ipa
+        run: |
+          mkdir -p ios/build/Payload
+          cp -R ios/build/app.xcarchive/Products/Applications/*.app ios/build/Payload/
+          cd ios/build
+          zip -qry "ParksPJT1-${{ needs.version.outputs.tag }}.ipa" Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ipa
+          path: ios/build/*.ipa
+
+  build-android:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - run: npm ci
+
+      - name: Set Android versionCode
+        run: |
+          node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync('app.json'));j.expo.android.versionCode=${{ github.run_number }};fs.writeFileSync('app.json',JSON.stringify(j,null,2));"
+
+      - name: Generate native Android project
+        run: npx expo prebuild --platform android
+
+      - name: Build release apk
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Rename apk
+        run: |
+          SRC=$(find android/app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          cp "$SRC" "ParksPJT1-${{ needs.version.outputs.tag }}.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: ParksPJT1-*.apk
+
+  release:
+    needs: [version, build-ios, build-android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: v${{ needs.version.outputs.version }} (build ${{ github.run_number }})
+          body: |
+            **iOS** — unsigned ipa. SideStore/AltStore로 설치하세요.
+            **Android** — debug 키로 서명된 release apk. 그대로 설치됩니다.
+
+            커밋: ${{ github.event.head_commit.message }}
+          prerelease: true
+          files: dist/*
