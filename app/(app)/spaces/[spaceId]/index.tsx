@@ -130,6 +130,38 @@ export default function SpaceHomeScreen() {
     );
   };
 
+  const handleLeaveSpace = async () => {
+    if (!spaceId || !user) return;
+
+    Alert.alert(
+      '앨범 나가기',
+      `'${spaceName || '이 앨범'}'에서 나가시겠습니까?\n\n※ 앨범에서 나가더라도 본인이 올린 사진과 Google 드라이브의 원본 파일은 삭제되지 않고 안전하게 보관됩니다. 다시 참여하려면 가족에게 새로운 초대 코드를 받아야 합니다.`,
+      [
+        { text: '취소', style: 'cancel' },
+        {
+          text: '나가기',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const { error } = await supabase
+                .from('space_members')
+                .delete()
+                .eq('space_id', spaceId)
+                .eq('user_id', user.id);
+
+              if (error) throw error;
+
+              Alert.alert('완료', '앨범에서 나갔습니다.');
+              router.replace('/(app)/spaces');
+            } catch (e: any) {
+              Alert.alert('나가기 실패', e.message || '앨범에서 나가지 못했습니다.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   return (
     <View style={styles.container}>
       <Stack.Screen
@@ -137,6 +169,17 @@ export default function SpaceHomeScreen() {
           title: spaceName || '앨범 홈',
           headerRight: () => (
             <View style={styles.headerRightRow}>
+              {/* 소유자 전용: 저장소 설정 버튼 */}
+              {isOwner && (
+                <TouchableOpacity
+                  style={styles.headerBtn}
+                  onPress={() => router.push(`/(app)/spaces/${spaceId}/connect-storage`)}
+                >
+                  <Text style={styles.headerBtnText}>⚙️ 저장소</Text>
+                </TouchableOpacity>
+              )}
+
+              {/* 관리자/소유자: 이름 변경 */}
               {canManage && (
                 <TouchableOpacity
                   style={styles.headerBtn}
@@ -145,14 +188,20 @@ export default function SpaceHomeScreen() {
                     setShowRenameModal(true);
                   }}
                 >
-                  <Text style={styles.headerBtnText}>✏️ 이름 변경</Text>
+                  <Text style={styles.headerBtnText}>✏️ 이름</Text>
                 </TouchableOpacity>
               )}
-              {isOwner && (
+
+              {/* 소유자: 앨범 삭제 / 초대받은 멤버(비소유자): 앨범 나가기 */}
+              {isOwner ? (
                 <TouchableOpacity style={[styles.headerBtn, styles.dangerHeaderBtn]} onPress={handleDeleteSpace}>
                   <Text style={styles.dangerHeaderBtnText}>🗑️ 삭제</Text>
                 </TouchableOpacity>
-              )}
+              ) : role ? (
+                <TouchableOpacity style={[styles.headerBtn, styles.dangerHeaderBtn]} onPress={handleLeaveSpace}>
+                  <Text style={styles.dangerHeaderBtnText}>🚪 나가기</Text>
+                </TouchableOpacity>
+              ) : null}
             </View>
           ),
         }}
@@ -209,11 +258,11 @@ const styles = StyleSheet.create({
   headerRightRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.xs,
+    gap: 4,
   },
   headerBtn: {
     backgroundColor: colors.surfaceAlt,
-    paddingHorizontal: 8,
+    paddingHorizontal: 7,
     paddingVertical: 4,
     borderRadius: radius.sm,
   },
