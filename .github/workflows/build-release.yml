@@ -22,6 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.ver.outputs.version }}
+      build: ${{ steps.ver.outputs.build }}
       tag: ${{ steps.ver.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
@@ -35,6 +36,11 @@ jobs:
           # 예전 태그와 충돌하고, action-gh-release가 그 옛 릴리스에 파일을 덧붙인다.
           # (실제로 발생: 새 산출물이 7/25자 v1.0.0-build2 릴리스 안에 섞였다.)
           BUILD=$(git rev-list --count HEAD)
+          # 빈 값이나 비숫자가 흘러가면 versionCode=; 같은 SyntaxError로 뒤 잡에서
+          # 터진다. 원인이 멀리 떨어져 있어 찾기 어려우니 여기서 막는다.
+          case "$BUILD" in
+            ''|*[!0-9]*) echo "::error::빌드 번호를 계산하지 못했다: '$BUILD'"; exit 1 ;;
+          esac
           TAG="v$VERSION-build$BUILD"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "build=$BUILD" >> "$GITHUB_OUTPUT"
