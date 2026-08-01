@@ -28,22 +28,13 @@ export default function CreateSpaceScreen() {
 
     setIsSubmitting(true);
     try {
-      // 1. Create space
+      // Create space (owner space_member row is created automatically by DB trigger)
       const { data: spaceData, error: spaceErr } = await (supabase.from('spaces') as any)
         .insert({ name: name.trim(), owner_id: user.id })
         .select()
         .single();
 
       if (spaceErr) throw spaceErr;
-
-      // 2. Insert owner member
-      const { error: memberErr } = await (supabase.from('space_members') as any).insert({
-        space_id: spaceData.id,
-        user_id: user.id,
-        role: 'owner',
-      });
-
-      if (memberErr) throw memberErr;
 
       // Navigate to connect storage flow (PRD step 4)
       router.replace(`/(app)/spaces/${spaceData.id}/connect-storage`);

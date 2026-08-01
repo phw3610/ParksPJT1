@@ -1,5 +1,5 @@
 import { useLocalSearchParams } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import {
   Alert,
   StyleSheet,
@@ -10,52 +10,43 @@ import {
 
 import { useAuth } from '@/auth';
 import { config } from '@/lib/config';
-import type { Invite } from '@/lib/database.types';
 import { supabase } from '@/lib/supabase';
 import { colors, radius, spacing, typography } from '@/lib/theme';
+
+interface GeneratedInvite {
+  token: string;
+  expiresAt: string;
+}
 
 export default function InviteScreen() {
   const { spaceId } = useLocalSearchParams<{ spaceId: string }>();
   const { user } = useAuth();
-  const [invite, setInvite] = useState<Invite | null>(null);
+  const [createdInvite, setCreatedInvite] = useState<GeneratedInvite | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
-
-  const fetchExistingInvite = async () => {
-    if (!spaceId) return;
-    const { data } = await supabase
-      .from('invites')
-      .select('*')
-      .eq('space_id', spaceId)
-      .is('revoked_at', null)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    setInvite(data);
-  };
-
-  useEffect(() => {
-    fetchExistingInvite();
-  }, [spaceId]);
 
   const handleCreateInvite = async () => {
     if (!spaceId || !user) return;
     setIsGenerating(true);
     try {
       const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-      const { data, error } = await (supabase.from('invites') as any)
-        .insert({
-          space_id: spaceId,
-          role: 'member',
-          created_by: user.id,
-          expires_at: expiresAt,
-          max_uses: 100,
-        })
-        .select()
-        .single();
+      const { data, error } = await (supabase.rpc as any)('create_invite', {
+        p_space_id: spaceId,
+        p_role: 'member',
+        p_expires_at: expiresAt,
+        p_max_uses: 100,
+      });
 
       if (error) throw error;
-      setInvite(data);
-      Alert.alert('초대 링크 생성 완료', '초대 링크가 생성되었습니다.');
+      const res = Array.isArray(data) ? data[0] : data;
+      if (!res?.token) {
+        throw new Error('초대 토큰을 발급받지 못했습니다.');
+      }
+
+      setCreatedInvite({
+        token: res.token,
+        expiresAt: res.expires_at || expiresAt,
+      });
+      Alert.alert('초대 링크 생성 완료', '초대 링크가 생성되었습니다. 링크를 복사해 전송해 주세요.');
     } catch (e: any) {
       Alert.alert('초대 생성 실패', e.message);
     } finally {
@@ -63,7 +54,7 @@ export default function InviteScreen() {
     }
   };
 
-  const inviteUrl = invite ? `${config.inviteBaseUrl}/${invite.id}` : '';
+  const inviteUrl = createdInvite ? `${config.inviteBaseUrl}/${createdInvite.token}` : '';
 
   return (
     <View style={styles.container}>
@@ -72,20 +63,31 @@ export default function InviteScreen() {
         초대 링크를 받아 앱을 실행하면 가족 앨범에 참여할 수 있습니다.
       </Text>
 
-      {invite ? (
+      {createdInvite ? (
         <View style={styles.card}>
           <Text style={styles.cardTitle}>초대 링크</Text>
           <Text style={styles.urlText} numberOfLines={2}>
             {inviteUrl}
           </Text>
-          <Text style={typography.caption}>
-            만료일: {new Date(invite.expires_at).toLocaleDateString('ko-KR')}
+          <Text style={styles.warningText}>
+            ⚠️ 이 링크는 보안을 위해 생성 시 한 번만 표시됩니다. 바로 복사해서 가족에게 공유해 주세요.
+          </Text>
+          <Text style={[typography.caption, styles.mtSm]}>
+            만료일: {new Date(createdInvite.expiresAt).toLocaleDateString('ko-KR')}
           </Text>
           <TouchableOpacity
             style={styles.copyBtn}
-            onPress={() => Alert.alert('복사 완료', '초대 링크가 복사되었습니다.')}
+            onPress={() => Alert.alert('복사 완료', '초대 링크가 클립보드에 복사되었습니다.')}
           >
             <Text style={styles.copyBtnText}>링크 복사하기</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.reGenBtn}
+            onPress={handleCreateInvite}
+            disabled={isGenerating}
+          >
+            <Text style={styles.reGenText}>+ 새 초대 링크 추가 생성</Text>
           </TouchableOpacity>
         </View>
       ) : (
@@ -133,6 +135,15 @@ const styles = StyleSheet.create({
     color: colors.primary,
     fontSize: 14,
     marginVertical: spacing.sm,
+    fontWeight: '600',
+  },
+  warningText: {
+    color: colors.warning,
+    fontSize: 12,
+    marginVertical: spacing.xs,
+  },
+  mtSm: {
+    marginTop: spacing.xs,
   },
   copyBtn: {
     backgroundColor: colors.primary,
@@ -144,6 +155,15 @@ const styles = StyleSheet.create({
   copyBtnText: {
     color: colors.primaryText,
     fontWeight: '600',
+  },
+  reGenBtn: {
+    paddingVertical: spacing.sm,
+    alignItems: 'center',
+    marginTop: spacing.sm,
+  },
+  reGenText: {
+    color: colors.textMuted,
+    fontSize: 13,
   },
   emptyCard: {
     backgroundColor: colors.surface,

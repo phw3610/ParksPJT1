@@ -170,9 +170,9 @@ class QueueManager {
       if (item.mime_type.startsWith('image')) {
         try {
           const thumbBlob = await (await fetch(item.file_uri)).blob();
-          const thumbPath = `thumbnails/${item.space_id}/${assetId}.jpg`;
+          const thumbPath = `${item.space_id}/${assetId}.jpg`;
           const { error: thumbErr } = await supabase.storage
-            .from('thumbnails')
+            .from('thumbs')
             .upload(thumbPath, thumbBlob, { contentType: 'image/jpeg', upsert: true });
 
           if (!thumbErr) thumbUploaded = true;
