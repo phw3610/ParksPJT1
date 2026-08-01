@@ -20,6 +20,9 @@ export interface UploadQueueItem {
   status: UploadQueueStatus;
   attempts: number;
   last_error: string | null;
+  last_error_code: string | null;
+  last_error_detail: string | null;
+  last_error_status: number | null;
   source: UploadSource;
   created_at: number;
 }
@@ -48,6 +51,9 @@ export async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
       status        TEXT NOT NULL DEFAULT 'pending',
       attempts      INTEGER NOT NULL DEFAULT 0,
       last_error    TEXT,
+      last_error_code TEXT,
+      last_error_detail TEXT,
+      last_error_status INTEGER,
       source        TEXT NOT NULL DEFAULT 'manual',
       created_at    INTEGER NOT NULL
     );
@@ -68,11 +74,40 @@ export async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
       last_run_count    INTEGER
     );
   `);
+
+  // 기존 설치의 로컬 큐 DB에도 진단 컬럼을 안전하게 추가한다.
+  const queueColumns = await dbInstance.getAllAsync<{ name: string }>(
+    'PRAGMA table_info(upload_queue)',
+  );
+  const queueColumnNames = new Set(queueColumns.map((column) => column.name));
+  if (!queueColumnNames.has('last_error_code')) {
+    await dbInstance.execAsync('ALTER TABLE upload_queue ADD COLUMN last_error_code TEXT;');
+  }
+  if (!queueColumnNames.has('last_error_detail')) {
+    await dbInstance.execAsync('ALTER TABLE upload_queue ADD COLUMN last_error_detail TEXT;');
+  }
+  if (!queueColumnNames.has('last_error_status')) {
+    await dbInstance.execAsync('ALTER TABLE upload_queue ADD COLUMN last_error_status INTEGER;');
+  }
+
   return dbInstance;
 }
 
 export async function enqueueItem(
-  item: Omit<UploadQueueItem, 'id' | 'created_at' | 'status' | 'attempts' | 'bytes_sent' | 'asset_id' | 'upload_url' | 'last_error'>
+  item: Omit<
+    UploadQueueItem,
+    | 'id'
+    | 'created_at'
+    | 'status'
+    | 'attempts'
+    | 'bytes_sent'
+    | 'asset_id'
+    | 'upload_url'
+    | 'last_error'
+    | 'last_error_code'
+    | 'last_error_detail'
+    | 'last_error_status'
+  >
 ): Promise<UploadQueueItem> {
   const db = await getDatabase();
   const id = `item_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -95,6 +130,9 @@ export async function enqueueItem(
     status: 'pending',
     attempts: 0,
     last_error: null,
+    last_error_code: null,
+    last_error_detail: null,
+    last_error_status: null,
     source: item.source,
     created_at: createdAt,
   };
@@ -143,7 +181,19 @@ export async function getAllItemsForSpace(spaceId: string): Promise<UploadQueueI
 export async function updateItemStatus(
   id: string,
   status: UploadQueueStatus,
-  updates?: Partial<Pick<UploadQueueItem, 'asset_id' | 'upload_url' | 'bytes_sent' | 'attempts' | 'last_error'>>
+  updates?: Partial<
+    Pick<
+      UploadQueueItem,
+      | 'asset_id'
+      | 'upload_url'
+      | 'bytes_sent'
+      | 'attempts'
+      | 'last_error'
+      | 'last_error_code'
+      | 'last_error_detail'
+      | 'last_error_status'
+    >
+  >
 ): Promise<void> {
   const db = await getDatabase();
   const setClauses: string[] = ['status = ?'];
@@ -168,6 +218,18 @@ export async function updateItemStatus(
   if (updates?.last_error !== undefined) {
     setClauses.push('last_error = ?');
     params.push(updates.last_error);
+  }
+  if (updates?.last_error_code !== undefined) {
+    setClauses.push('last_error_code = ?');
+    params.push(updates.last_error_code);
+  }
+  if (updates?.last_error_detail !== undefined) {
+    setClauses.push('last_error_detail = ?');
+    params.push(updates.last_error_detail);
+  }
+  if (updates?.last_error_status !== undefined) {
+    setClauses.push('last_error_status = ?');
+    params.push(updates.last_error_status);
   }
 
   params.push(id);

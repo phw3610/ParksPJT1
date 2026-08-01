@@ -100,8 +100,10 @@ async function wrap<T>(fn: () => Promise<T>): Promise<T> {
       const code = (KNOWN_CODES as string[]).includes(e.code)
         ? (e.code as StorageErrorCode)
         : 'UNKNOWN';
-      throw new StorageError(code, e.message, code === 'RATE_LIMITED');
+      throw new StorageError(code, e.message, code === 'RATE_LIMITED', e.code, e.message, e.status);
     }
-    throw new StorageError('NETWORK', e instanceof Error ? e.message : String(e), true);
+    const message = e instanceof Error ? e.message : String(e);
+    const originalCode = e instanceof Error && e.name ? e.name : 'NETWORK';
+    throw new StorageError('NETWORK', message, true, originalCode, message);
   }
 }

@@ -1,3 +1,4 @@
+import { Image } from 'expo-image';
 import * as MediaLibrary from 'expo-media-library';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
@@ -14,12 +15,17 @@ import type { Asset } from '@/lib/database.types';
 import { supabase } from '@/lib/supabase';
 import { colors, radius, spacing, typography } from '@/lib/theme';
 import { deleteAssets, getDownloadTickets } from '@/storage/client';
+import {
+  createThumbnailSignedUrls,
+  THUMBNAIL_URL_REFRESH_MS,
+} from '@/storage/thumbnails';
 
 export default function AssetDetailScreen() {
   const { spaceId, assetId } = useLocalSearchParams<{ spaceId: string; assetId: string }>();
   const router = useRouter();
 
   const [asset, setAsset] = useState<Asset | null>(null);
+  const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isDownloading, setIsDownloading] = useState(false);
 
@@ -44,6 +50,33 @@ export default function AssetDetailScreen() {
 
     fetchAsset();
   }, [assetId]);
+
+  useEffect(() => {
+    if (!asset?.thumb_path) {
+      setThumbnailUrl(null);
+      return;
+    }
+
+    let isCancelled = false;
+    const refreshThumbnailUrl = async () => {
+      try {
+        const urls = await createThumbnailSignedUrls([asset]);
+        if (!isCancelled) setThumbnailUrl(urls[asset.id] ?? null);
+      } catch {
+        if (!isCancelled) setThumbnailUrl(null);
+      }
+    };
+
+    void refreshThumbnailUrl();
+    const refreshTimer = setInterval(() => {
+      void refreshThumbnailUrl();
+    }, THUMBNAIL_URL_REFRESH_MS);
+
+    return () => {
+      isCancelled = true;
+      clearInterval(refreshTimer);
+    };
+  }, [asset]);
 
   const handleDownload = async () => {
     if (!assetId || !asset) return;
@@ -130,9 +163,23 @@ export default function AssetDetailScreen() {
 
       {/* 2. Photo Display Area */}
       <View style={styles.imageBox}>
-        <Text style={styles.imageIcon}>📷</Text>
-        <Text style={styles.imageText}>원본 해상도: {asset.width || '?'} x {asset.height || '?'}</Text>
-        <Text style={typography.caption}>파일 크기: {(asset.byte_size / (1024 * 1024)).toFixed(2)} MB</Text>
+        {thumbnailUrl ? (
+          <Image
+            source={thumbnailUrl}
+            style={styles.previewImage}
+            contentFit="contain"
+            cachePolicy="memory-disk"
+            transition={150}
+            accessibilityLabel={asset.original_name}
+            onError={() => setThumbnailUrl(null)}
+          />
+        ) : (
+          <Text style={styles.imageIcon}>📷</Text>
+        )}
+        <View style={styles.imageMetadata}>
+          <Text style={styles.imageText}>원본 해상도: {asset.width || '?'} x {asset.height || '?'}</Text>
+          <Text style={typography.caption}>파일 크기: {(asset.byte_size / (1024 * 1024)).toFixed(2)} MB</Text>
+        </View>
       </View>
 
       {/* 3. Bottom Toolbar */}
@@ -188,9 +235,19 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: '#000000',
   },
+  previewImage: {
+    ...StyleSheet.absoluteFillObject,
+  },
   imageIcon: {
     fontSize: 64,
-    marginBottom: spacing.md,
+  },
+  imageMetadata: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    padding: spacing.md,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
   },
   imageText: {
     color: colors.text,
