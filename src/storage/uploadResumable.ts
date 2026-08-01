@@ -27,9 +27,9 @@ export async function uploadResumable(
       {
         httpMethod: 'PUT',
         uploadType: FileSystemUploadType.BINARY_CONTENT,
+        // iOS URLSession derives Content-Length from sourceUrl for file upload tasks.
         headers: {
           'Content-Type': mimeType,
-          'Content-Length': String(byteSize),
         },
       },
       (data) => {
