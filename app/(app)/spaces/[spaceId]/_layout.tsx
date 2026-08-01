@@ -1,9 +1,12 @@
-import { Stack } from 'expo-router';
+import { HeaderBackButton } from '@react-navigation/elements';
+import { Stack, useRouter } from 'expo-router';
 import React from 'react';
 
 import { colors } from '@/lib/theme';
 
 export default function SpaceDetailLayout() {
+  const router = useRouter();
+
   return (
     <Stack
       screenOptions={{
@@ -13,7 +16,25 @@ export default function SpaceDetailLayout() {
         contentStyle: { backgroundColor: colors.bg },
       }}
     >
-      <Stack.Screen name="index" options={{ title: '앨범 홈' }} />
+      <Stack.Screen
+        name="index"
+        options={{
+          title: '앨범 홈',
+          headerLeft: (props) => (
+            <HeaderBackButton
+              {...props}
+              tintColor={colors.text}
+              onPress={() => {
+                if (router.canGoBack()) {
+                  router.back();
+                } else {
+                  router.replace('/(app)/spaces');
+                }
+              }}
+            />
+          ),
+        }}
+      />
       <Stack.Screen name="folder/[folderId]" options={{ title: '폴더' }} />
       <Stack.Screen name="connect-storage" options={{ title: '저장소 연결' }} />
       <Stack.Screen name="invite" options={{ title: '가족 초대' }} />
