@@ -9,6 +9,13 @@ interface UseSpaceRealtimeOptions {
   onMembersChange?: () => void;
 }
 
+let nextChannelInstanceId = 0;
+
+function createChannelInstanceId(): number {
+  nextChannelInstanceId += 1;
+  return nextChannelInstanceId;
+}
+
 export function useSpaceRealtime({
   spaceId,
   onAssetsChange,
@@ -16,6 +23,12 @@ export function useSpaceRealtime({
   onMembersChange,
 }: UseSpaceRealtimeOptions): void {
   const handlersRef = useRef({ onAssetsChange, onFoldersChange, onMembersChange });
+  const channelInstanceIdRef = useRef<number | null>(null);
+
+  if (channelInstanceIdRef.current === null) {
+    channelInstanceIdRef.current = createChannelInstanceId();
+  }
+
   handlersRef.current = { onAssetsChange, onFoldersChange, onMembersChange };
 
   useEffect(() => {
@@ -23,7 +36,7 @@ export function useSpaceRealtime({
 
     const filter = `space_id=eq.${spaceId}`;
     const channel = supabase
-      .channel(`space:${spaceId}`)
+      .channel(`space:${spaceId}:${channelInstanceIdRef.current}`)
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'assets', filter },
