@@ -456,7 +456,28 @@ create policy members_delete on space_members for delete
     user_id = auth.uid()                      -- 스스로 나가기
     or (public.can_manage(space_id) and role <> 'owner')
   );
--- INSERT 정책 없음: 멤버 추가는 accept_invite RPC(security definer)로만 가능
+-- INSERT 정책 없음: 멤버 추가는 security definer 경로로만 가능
+--   (1) 스페이스 생성자의 owner 행 → spaces_seed_owner 트리거 (아래)
+--   (2) 초대 수락 → accept_invite RPC
+```
+
+**생성자의 owner 행을 만드는 경로가 반드시 필요하다.** 없으면 스페이스를 만든 직후
+`spaces_select`의 `is_space_member(id)`가 false라 자기 스페이스가 보이지 않고,
+초대 생성은 `can_manage`를 요구하므로 순환에 빠진다.
+
+```sql
+create or replace function public.spaces_seed_owner() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  insert into space_members (space_id, user_id, role)
+  values (new.id, new.owner_id, 'owner')
+  on conflict (space_id, user_id) do nothing;
+  return null;
+end $$;
+
+create trigger spaces_seed_owner_trg
+  after insert on spaces
+  for each row execute function public.spaces_seed_owner();
 
 -- folders
 create policy folders_select on folders for select
@@ -544,7 +565,31 @@ grant select (id, space_id, role, created_by, expires_at,
 
 ---
 
-## 4. 초대 수락 RPC
+## 4. 초대 RPC
+
+### 4.1 발급 — `create_invite`
+
+`invites.token_hash`는 `not null`이고 원문 토큰은 저장하지 않으므로, 클라이언트가 `invites`에
+직접 insert할 수 없다. 토큰 생성·해싱을 서버가 맡는 `security definer` RPC로만 발급한다.
+
+```sql
+create or replace function public.create_invite(
+  p_space_id   uuid,
+  p_role       member_role default 'member',
+  p_expires_at timestamptz default (now() + interval '7 days'),
+  p_max_uses   int default 1
+) returns table (invite_id uuid, token text, expires_at timestamptz)
+```
+
+- `security definer`라 RLS가 걸리지 않는다. **함수 안에서 직접 `can_manage(p_space_id)`를 검사한다.**
+  비멤버에게는 `can_manage`가 NULL을 반환하므로 `is not true`로 비교해야 한다.
+- `p_role = 'owner'`는 거부한다. 초대로 owner를 만들 수 없다.
+- 토큰은 `encode(gen_random_bytes(32),'hex')`, 저장은 `encode(digest(token,'sha256'),'hex')`.
+  `accept_invite`의 비교 방식과 **반드시 동일해야 한다.**
+- `revoke all from public, anon` 후 `grant execute to authenticated`.
+- **`token`은 이때 한 번만 반환된다.** 다시 조회할 수 없다.
+
+### 4.2 수락 — `accept_invite`
 
 멤버 추가는 RLS로 표현할 수 없다(아직 멤버가 아닌 사람이 자기 행을 삽입해야 하므로). `security definer` RPC로만 허용한다.
 
@@ -673,5 +718,13 @@ create policy thumbs_delete on storage.objects for delete
 | 13 | 부모 폴더 이름 변경 후 손자 폴더 `path` 확인 | 하위 전체 갱신됨 |
 | 14 | 강퇴 직후 Realtime 이벤트 수신 | 더 이상 수신 안 됨 |
 | 15 | 비멤버가 `thumbs` 버킷 객체 요청 | 403 |
+| 16 | 스페이스 생성 직후 생성자가 그 스페이스를 조회 | 1행 (owner 멤버십 자동 생성됨) |
+| 17 | 비멤버가 `create_invite` 호출 | `FORBIDDEN` |
+| 18 | `create_invite`가 반환한 토큰으로 `accept_invite` | 멤버 추가 성공 |
 
-이 15개는 Phase 1 완료 게이트다. 하나라도 실패하면 배포하지 않는다.
+이 18개는 Phase 1 완료 게이트다. 하나라도 실패하면 배포하지 않는다.
+
+> 16~18은 나중에 추가했다. 원래 15개는 **경로가 아예 없는 것**을 잡지 못했다.
+> 스페이스를 만들면 생성자가 자기 스페이스를 볼 수 없었고(owner 행을 만들 경로 부재),
+> 초대는 `token_hash not null` 때문에 아예 발급이 불가능했다.
+> 정책이 "거부하는지"만 검사하고 "정상 경로가 실제로 뚫려 있는지"는 검사하지 않은 탓이다.

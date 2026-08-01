@@ -74,7 +74,8 @@ codex와 antigravity 두 에이전트가 분리된 worktree에서 병렬로 작�
 
 ### 백엔드 (`supabase/`)
 ```
-migrations/0001_init.sql      DDL + RLS + 체크리스트 15개 대응 주석
+migrations/0001_init.sql      DDL + RLS + 체크리스트 대응 주석
+                              spaces_seed_owner 트리거 · create_invite RPC
 functions/_shared/            googleDrive · tokens · jwt · push · common · types
 functions/                    storage-connect · storage-disconnect
                               uploads-create-session · uploads-complete · uploads-fail
@@ -101,7 +102,7 @@ app/(auth)/, app/(app)/, app/invite/[token].tsx   docs/01 §5 플로우 전 화�
 ### A. 백엔드 실제 적용 — 아직 아무것도 실행되지 않았다
 1. Supabase 프로젝트 생성 → `.env` 채우기
 2. `0001_init.sql`을 실제 적용 (지금까지 단 한 번도 실행한 적 없다)
-3. `docs/02` §7의 **검증 체크리스트 15개**를 통과시킨다 (Phase 1 완료 게이트).
+3. `docs/02` §7의 **검증 체크리스트 18개**를 통과시킨다 (Phase 1 완료 게이트).
    SQL은 눈으로만 재검토했고 `supabase db lint`조차 실행하지 못했다 (로컬 Postgres·Docker 부재).
 4. Google Cloud Console: Drive API 활성화, OAuth 클라이언트 3종(웹/iOS/Android) 생성,
    동의 화면에 `drive.file` 스코프 등록
@@ -113,7 +114,7 @@ EAS 개발 빌드로 실기기에서 확인한다 (Expo Go 불가). Google Sign-
 
 ### C. 릴리즈 전 필수
 - [ ] Google에 use case 서면 조회 후 회신 보관 (`docs/phase0` §0.2 H)
-- [ ] `docs/02` §7 RLS 검증 15개 전부 통과
+- [ ] `docs/02` §7 RLS 검증 18개 전부 통과
 - [ ] 개인정보처리방침에 썸네일 서버 보관 사실 명시
 - [ ] EAS 개발 빌드로 실기기 검증 (Expo Go 불가)
 
