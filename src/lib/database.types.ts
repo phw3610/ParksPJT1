@@ -376,6 +376,19 @@ export interface Database {
     };
     Views: Record<string, never>;
     Functions: {
+      create_invite: {
+        Args: {
+          p_space_id: string;
+          p_role?: MemberRole;
+          p_expires_at?: string;
+          p_max_uses?: number;
+        };
+        Returns: {
+          invite_id: string;
+          token: string;
+          expires_at: string;
+        }[];
+      };
       accept_invite: { Args: { p_token: string }; Returns: string };
       preview_invite: {
         Args: { p_token: string };

@@ -37,6 +37,21 @@ create index on space_members (user_id);
 create unique index one_owner_per_space
   on space_members (space_id) where role = 'owner';
 
+-- A space insert and its owner membership are atomic. This SECURITY DEFINER
+-- trigger is the sole exception to the no-client-INSERT policy on members.
+create or replace function public.spaces_seed_owner() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  insert into space_members (space_id, user_id, role)
+  values (new.id, new.owner_id, 'owner')
+  on conflict (space_id, user_id) do nothing;
+  return null;
+end $$;
+
+create trigger spaces_seed_owner_trg
+  after insert on spaces
+  for each row execute function public.spaces_seed_owner();
+
 create table folders (
   id              uuid primary key default gen_random_uuid(),
   space_id        uuid not null references spaces(id) on delete cascade,
@@ -397,6 +412,50 @@ grant select (
   id, space_id, role, created_by, expires_at,
   max_uses, used_count, revoked_at, created_at
 ) on invites to authenticated;
+
+create or replace function public.create_invite(
+  p_space_id   uuid,
+  p_role       member_role default 'member',
+  p_expires_at timestamptz default (now() + interval '7 days'),
+  p_max_uses   int default 1
+) returns table (invite_id uuid, token text, expires_at timestamptz)
+language plpgsql security definer set search_path = public
+as $$
+declare
+  v_token text;
+begin
+  -- can_manage returns null for non-members, so IS NOT TRUE is intentional.
+  if public.can_manage(p_space_id) is not true then
+    raise exception 'FORBIDDEN' using errcode = 'P0001';
+  end if;
+
+  if p_role = 'owner' then
+    raise exception 'INVITE_OWNER_FORBIDDEN' using errcode = 'P0001';
+  end if;
+
+  v_token := encode(extensions.gen_random_bytes(32), 'hex');
+
+  insert into invites (
+    space_id, token_hash, role, created_by, expires_at, max_uses
+  ) values (
+    p_space_id,
+    encode(extensions.digest(v_token, 'sha256'), 'hex'),
+    p_role,
+    auth.uid(),
+    p_expires_at,
+    p_max_uses
+  )
+  returning id into invite_id;
+
+  token := v_token;
+  expires_at := p_expires_at;
+  return next;
+end $$;
+
+revoke all on function public.create_invite(uuid, member_role, timestamptz, int)
+  from public, anon;
+grant execute on function public.create_invite(uuid, member_role, timestamptz, int)
+  to authenticated;
 
 create or replace function public.accept_invite(p_token text)
 returns uuid
