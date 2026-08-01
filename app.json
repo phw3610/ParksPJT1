@@ -1,25 +1,61 @@
 {
   "expo": {
-    "name": "ParksPJT1",
+    "name": "가족 앨범",
     "slug": "ParksPJT1",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
+    "scheme": "familyshare",
     "userInterfaceStyle": "light",
+    "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.phw3610.parkspjt1"
+      "bundleIdentifier": "com.phw3610.parkspjt1",
+      "infoPlist": {
+        "UIBackgroundModes": ["processing", "fetch", "remote-notification"]
+      }
     },
     "android": {
+      "package": "com.phw3610.parkspjt1",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
-      }
+      },
+      "permissions": [
+        "READ_MEDIA_IMAGES",
+        "READ_MEDIA_VIDEO",
+        "ACCESS_NETWORK_STATE"
+      ]
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-sqlite",
+      "expo-background-task",
+      "@react-native-google-signin/google-signin",
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "가족 앨범에 사진을 올리기 위해 사진 접근 권한이 필요해요.",
+          "savePhotosPermission": "받은 사진을 기기에 저장하기 위해 권한이 필요해요.",
+          "isAccessMediaLocationEnabled": true
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "가족 앨범에 올릴 사진을 고르기 위해 사진 접근 권한이 필요해요."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
     }
   }
 }

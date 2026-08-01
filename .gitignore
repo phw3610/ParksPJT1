@@ -30,8 +30,10 @@ yarn-error.*
 .DS_Store
 *.pem
 
-# local env files
+# local env files (.env.example은 커밋한다)
+.env
 .env*.local
+!.env.example
 
 # typescript
 *.tsbuildinfo
