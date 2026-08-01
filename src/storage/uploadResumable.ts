@@ -1,4 +1,8 @@
-import { createUploadTask, FileSystemUploadType } from 'expo-file-system/legacy';
+import {
+  createUploadTask,
+  FileSystemSessionType,
+  FileSystemUploadType,
+} from 'expo-file-system/legacy';
 
 import { UPLOAD_LIMITS } from '@/lib/config';
 
@@ -26,6 +30,7 @@ export async function uploadResumable(
       fileUri,
       {
         httpMethod: 'PUT',
+        sessionType: FileSystemSessionType.FOREGROUND,
         uploadType: FileSystemUploadType.BINARY_CONTENT,
         // iOS URLSession derives Content-Length from sourceUrl for file upload tasks.
         headers: {
