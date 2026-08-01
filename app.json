@@ -38,7 +38,12 @@
       "expo-secure-store",
       "expo-sqlite",
       "expo-background-task",
-      "@react-native-google-signin/google-signin",
+      [
+        "@react-native-google-signin/google-signin",
+        {
+          "iosUrlScheme": "com.googleusercontent.apps.145127245914-b1ipmqqji293v8610nnkskctekt6bk04"
+        }
+      ],
       [
         "expo-media-library",
         {
