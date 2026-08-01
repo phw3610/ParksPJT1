@@ -1,3 +1,4 @@
+import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -20,6 +21,10 @@ import { supabase } from '@/lib/supabase';
 import { colors, radius, spacing, typography } from '@/lib/theme';
 import { queueManager } from '@/queue';
 import { useSpaceRealtime } from '@/realtime/useSpaceRealtime';
+import {
+  createThumbnailSignedUrls,
+  THUMBNAIL_URL_REFRESH_MS,
+} from '@/storage/thumbnails';
 
 interface FolderBrowserProps {
   spaceId: string;
@@ -35,6 +40,7 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
   const [currentFolder, setCurrentFolder] = useState<Folder | null>(null);
   const [subFolders, setSubFolders] = useState<Folder[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
+  const [thumbnailUrls, setThumbnailUrls] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
@@ -119,6 +125,29 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
   useEffect(() => {
     void fetchData();
   }, [fetchData]);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    const refreshThumbnailUrls = async () => {
+      try {
+        const urls = await createThumbnailSignedUrls(assets);
+        if (!isCancelled) setThumbnailUrls(urls);
+      } catch {
+        if (!isCancelled) setThumbnailUrls({});
+      }
+    };
+
+    void refreshThumbnailUrls();
+    const refreshTimer = setInterval(() => {
+      void refreshThumbnailUrls();
+    }, THUMBNAIL_URL_REFRESH_MS);
+
+    return () => {
+      isCancelled = true;
+      clearInterval(refreshTimer);
+    };
+  }, [assets]);
 
   const scheduleRealtimeRefresh = useCallback(() => {
     if (realtimeRefreshTimer.current) clearTimeout(realtimeRefreshTimer.current);
@@ -325,6 +354,7 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
           }
           renderItem={({ item }) => {
             const isSelected = selectedAssetIds.has(item.id);
+            const thumbnailUrl = thumbnailUrls[item.id];
             return (
               <TouchableOpacity
                 style={[styles.assetCell, isSelected && styles.assetSelected]}
@@ -338,10 +368,32 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
                 onLongPress={() => toggleSelectAsset(item.id)}
               >
                 <View style={styles.photoPlaceholder}>
-                  <Text style={styles.photoIcon}>📷</Text>
-                  <Text style={styles.photoName} numberOfLines={1}>
-                    {item.original_name}
-                  </Text>
+                  {thumbnailUrl ? (
+                    <Image
+                      source={thumbnailUrl}
+                      style={styles.thumbnail}
+                      contentFit="cover"
+                      cachePolicy="memory-disk"
+                      recyclingKey={item.id}
+                      transition={150}
+                      accessibilityLabel={item.original_name}
+                      onError={() => {
+                        setThumbnailUrls((current) => {
+                          if (!current[item.id]) return current;
+                          const next = { ...current };
+                          delete next[item.id];
+                          return next;
+                        });
+                      }}
+                    />
+                  ) : (
+                    <Text style={styles.photoIcon}>📷</Text>
+                  )}
+                  <View style={styles.photoNameBackdrop}>
+                    <Text style={styles.photoName} numberOfLines={1}>
+                      {item.original_name}
+                    </Text>
+                  </View>
                 </View>
                 {isSelected && <View style={styles.checkBadge}><Text style={styles.checkText}>✓</Text></View>}
               </TouchableOpacity>
@@ -541,14 +593,25 @@ const styles = StyleSheet.create({
     borderRadius: radius.sm,
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 4,
+    overflow: 'hidden',
+  },
+  thumbnail: {
+    ...StyleSheet.absoluteFillObject,
   },
   photoIcon: {
     fontSize: 24,
-    marginBottom: 2,
+  },
+  photoNameBackdrop: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: 4,
+    paddingVertical: 3,
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
   },
   photoName: {
-    color: colors.textMuted,
+    color: '#FFFFFF',
     fontSize: 10,
     textAlign: 'center',
   },

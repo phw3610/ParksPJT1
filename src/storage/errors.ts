@@ -5,10 +5,48 @@ export class StorageError extends Error {
     readonly code: StorageErrorCode,
     message: string,
     readonly retryable = false,
+    readonly originalCode: string = code,
+    readonly originalMessage: string = message,
+    readonly httpStatus?: number,
   ) {
     super(message);
     this.name = 'StorageError';
   }
+}
+
+export interface OriginalErrorDetails {
+  code: string;
+  message: string;
+  status?: number;
+}
+
+/** 사용자 문구와 별도로 진단에 필요한 원본 오류를 보존한다. */
+export function originalErrorDetails(error: unknown): OriginalErrorDetails {
+  if (error instanceof StorageError) {
+    return {
+      code: error.originalCode,
+      message: error.originalMessage,
+      status: error.httpStatus,
+    };
+  }
+
+  if (error instanceof Error) {
+    const errorWithCode = error as Error & { code?: unknown };
+    return {
+      code: typeof errorWithCode.code === 'string' ? errorWithCode.code : error.name || 'UNKNOWN',
+      message: error.message,
+    };
+  }
+
+  if (typeof error === 'object' && error !== null) {
+    const value = error as { code?: unknown; message?: unknown };
+    return {
+      code: typeof value.code === 'string' ? value.code : 'UNKNOWN',
+      message: typeof value.message === 'string' ? value.message : String(error),
+    };
+  }
+
+  return { code: 'UNKNOWN', message: String(error) };
 }
 
 /** 사용자에게 보여줄 한국어 문구. 없는 코드는 일반 문구로 떨어진다. */

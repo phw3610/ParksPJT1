@@ -1,7 +1,13 @@
 import { UPLOAD_LIMITS } from '@/lib/config';
 import { supabase } from '@/lib/supabase';
 import { completeUpload, createUploadSession, failUpload } from '@/storage/client';
-import { backoffMs, isRetryable, needsReconnect, userMessage } from '@/storage/errors';
+import {
+  backoffMs,
+  isRetryable,
+  needsReconnect,
+  originalErrorDetails,
+  userMessage,
+} from '@/storage/errors';
 import { uploadResumable } from '@/storage/uploadResumable';
 
 import {
@@ -88,7 +94,13 @@ class QueueManager {
   }
 
   async retryItem(id: string, spaceId: string) {
-    await updateItemStatus(id, 'pending', { attempts: 0, last_error: null });
+    await updateItemStatus(id, 'pending', {
+      attempts: 0,
+      last_error: null,
+      last_error_code: null,
+      last_error_detail: null,
+      last_error_status: null,
+    });
     await this.notifyListeners(spaceId);
     this.processQueue();
   }
@@ -190,28 +202,27 @@ class QueueManager {
       const isRetry = isRetryable(err);
       const attempts = item.attempts + 1;
       const msg = userMessage(err) || err?.message || '업로드 중 오류 발생';
+      const originalError = originalErrorDetails(err);
+      const errorUpdates = {
+        attempts,
+        last_error: msg,
+        last_error_code: originalError.code,
+        last_error_detail: originalError.message,
+        last_error_status: originalError.status ?? null,
+      };
 
       if (isNeedReconnect) {
         this.isPaused = true;
-        await updateItemStatus(item.id, 'paused', {
-          attempts,
-          last_error: msg,
-        });
+        await updateItemStatus(item.id, 'paused', errorUpdates);
       } else if (isRetry && attempts < UPLOAD_LIMITS.maxAttempts) {
         const delay = backoffMs(attempts);
-        await updateItemStatus(item.id, 'pending', {
-          attempts,
-          last_error: msg,
-        });
+        await updateItemStatus(item.id, 'pending', errorUpdates);
         setTimeout(() => this.processQueue(), delay);
       } else {
         if (item.asset_id) {
-          await failUpload(item.asset_id, err?.code || 'UPLOAD_FAILED');
+          await failUpload(item.asset_id, originalError.code || 'UPLOAD_FAILED');
         }
-        await updateItemStatus(item.id, 'failed', {
-          attempts,
-          last_error: msg,
-        });
+        await updateItemStatus(item.id, 'failed', errorUpdates);
       }
 
       await this.notifyListeners(item.space_id);

@@ -10,21 +10,36 @@ import {
 } from 'react-native';
 
 import { colors, radius, spacing, typography } from '@/lib/theme';
-import { queueManager, UploadQueueItem } from '@/queue';
+import { getAllItemsForSpace, queueManager, UploadQueueItem } from '@/queue';
 
 export default function QueueScreen() {
   const { spaceId } = useLocalSearchParams<{ spaceId: string }>();
   const [items, setItems] = useState<UploadQueueItem[]>([]);
   const [wifiOnly, setWifiOnly] = useState(true);
+  const [expandedErrorIds, setExpandedErrorIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (!spaceId) return;
-    queueManager.init().then(() => {
-      const unsub = queueManager.subscribe((newItems) => {
-        setItems(newItems);
+    let isMounted = true;
+    let unsubscribe: (() => void) | undefined;
+
+    const loadQueue = async () => {
+      await queueManager.init();
+      if (!isMounted) return;
+
+      unsubscribe = queueManager.subscribe((newItems) => {
+        if (isMounted) setItems(newItems.filter((item) => item.space_id === spaceId));
       });
-      return unsub;
-    });
+
+      const existingItems = await getAllItemsForSpace(spaceId);
+      if (isMounted) setItems(existingItems);
+    };
+
+    void loadQueue();
+    return () => {
+      isMounted = false;
+      unsubscribe?.();
+    };
   }, [spaceId]);
 
   const activeCount = items.filter((i) => i.status === 'uploading').length;
@@ -41,6 +56,15 @@ export default function QueueScreen() {
 
   const handleClearCompleted = () => {
     if (spaceId) queueManager.clearCompleted(spaceId);
+  };
+
+  const toggleErrorDetails = (id: string) => {
+    setExpandedErrorIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   };
 
   return (
@@ -77,6 +101,7 @@ export default function QueueScreen() {
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.listContent}
           renderItem={({ item }) => {
+            const isErrorExpanded = expandedErrorIds.has(item.id);
             const percent =
               item.byte_size > 0
                 ? Math.min(Math.round((item.bytes_sent / item.byte_size) * 100), 100)
@@ -116,7 +141,29 @@ export default function QueueScreen() {
                 )}
 
                 {item.last_error && (
-                  <Text style={styles.errorText}>⚠️ {item.last_error}</Text>
+                  <View style={styles.errorBox}>
+                    <Text style={styles.errorText}>⚠️ {item.last_error}</Text>
+                    {item.last_error_code && (
+                      <Text style={styles.errorCode}>오류 코드: {item.last_error_code}</Text>
+                    )}
+                    {item.last_error_status !== null && item.last_error_status !== undefined && (
+                      <Text style={styles.errorCode}>HTTP 상태: {item.last_error_status}</Text>
+                    )}
+                    {item.last_error_detail && (
+                      <>
+                        <TouchableOpacity onPress={() => toggleErrorDetails(item.id)}>
+                          <Text style={styles.errorToggle}>
+                            {isErrorExpanded ? '상세 접기' : '상세 보기'}
+                          </Text>
+                        </TouchableOpacity>
+                        {isErrorExpanded && (
+                          <Text style={styles.errorDetail} selectable>
+                            {item.last_error_detail}
+                          </Text>
+                        )}
+                      </>
+                    )}
+                  </View>
                 )}
 
                 <View style={styles.actionRow}>
@@ -243,7 +290,30 @@ const styles = StyleSheet.create({
   errorText: {
     color: colors.danger,
     fontSize: 12,
+  },
+  errorBox: {
     marginTop: spacing.xs,
+  },
+  errorCode: {
+    marginTop: 2,
+    color: colors.warning,
+    fontSize: 11,
+    fontFamily: 'monospace',
+  },
+  errorToggle: {
+    marginTop: 4,
+    color: colors.primary,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  errorDetail: {
+    marginTop: 4,
+    padding: spacing.xs,
+    color: colors.textMuted,
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: radius.sm,
+    fontSize: 11,
+    fontFamily: 'monospace',
   },
   actionRow: {
     flexDirection: 'row',
