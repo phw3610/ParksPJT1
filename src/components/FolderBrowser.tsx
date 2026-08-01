@@ -1,6 +1,6 @@
 import * as ImagePicker from 'expo-image-picker';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import { useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -19,6 +19,7 @@ import type { Asset, Folder, StorageConnection } from '@/lib/database.types';
 import { supabase } from '@/lib/supabase';
 import { colors, radius, spacing, typography } from '@/lib/theme';
 import { queueManager } from '@/queue';
+import { useSpaceRealtime } from '@/realtime/useSpaceRealtime';
 
 interface FolderBrowserProps {
   spaceId: string;
@@ -27,6 +28,7 @@ interface FolderBrowserProps {
 
 export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) {
   const { user } = useAuth();
+  const userId = user?.id;
   const router = useRouter();
 
   const [connection, setConnection] = useState<StorageConnection | null>(null);
@@ -44,10 +46,26 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
   // Multi-select state
   const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(new Set());
   const isMultiSelect = selectedAssetIds.size > 0;
+  const realtimeRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     if (!spaceId) return;
     try {
+      if (userId) {
+        const { data: membership, error: membershipError } = await supabase
+          .from('space_members')
+          .select('space_id')
+          .eq('space_id', spaceId)
+          .eq('user_id', userId)
+          .maybeSingle();
+
+        if (membershipError) throw membershipError;
+        if (!membership) {
+          router.replace('/(app)/spaces');
+          return;
+        }
+      }
+
       // 1. Connection status
       const { data: conn } = await supabase
         .from('storage_connections')
@@ -94,15 +112,37 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  };
+  }, [folderId, router, spaceId, userId]);
 
   useEffect(() => {
-    fetchData();
-  }, [spaceId, folderId]);
+    void fetchData();
+  }, [fetchData]);
+
+  const scheduleRealtimeRefresh = useCallback(() => {
+    if (realtimeRefreshTimer.current) clearTimeout(realtimeRefreshTimer.current);
+    realtimeRefreshTimer.current = setTimeout(() => {
+      realtimeRefreshTimer.current = null;
+      void fetchData();
+    }, 250);
+  }, [fetchData]);
+
+  useEffect(() => {
+    return () => {
+      if (realtimeRefreshTimer.current) clearTimeout(realtimeRefreshTimer.current);
+      realtimeRefreshTimer.current = null;
+    };
+  }, [fetchData]);
+
+  useSpaceRealtime({
+    spaceId,
+    onAssetsChange: scheduleRealtimeRefresh,
+    onFoldersChange: scheduleRealtimeRefresh,
+    onMembersChange: scheduleRealtimeRefresh,
+  });
 
   const onRefresh = () => {
     setIsRefreshing(true);
-    fetchData();
+    void fetchData();
   };
 
   const handleCreateFolder = async () => {
@@ -130,7 +170,7 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
       if (error) throw error;
       setNewFolderName('');
       setShowFolderModal(false);
-      fetchData();
+      void fetchData();
     } catch (e: any) {
       Alert.alert('폴더 생성 실패', e.message);
     } finally {
