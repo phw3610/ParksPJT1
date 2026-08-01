@@ -680,7 +680,7 @@ alter publication supabase_realtime add table folders;
 alter publication supabase_realtime add table space_members;
 ```
 
-**Realtime은 RLS를 존중한다** — 멤버가 아닌 사용자에게는 이벤트가 전달되지 않는다. 클라이언트는 `space_id=eq.{id}` 필터로 구독한다.
+**Realtime은 RLS를 존중한다 — 단, INSERT/UPDATE에 한한다.** 멤버가 아닌 사용자에게는 이벤트가 전달되지 않는다. 클라이언트는 `space_id=eq.{id}` 필터로 구독한다.
 
 ```ts
 supabase.channel(`space:${spaceId}`)
@@ -690,7 +690,28 @@ supabase.channel(`space:${spaceId}`)
   .subscribe()
 ```
 
-**강퇴 시 즉시 차단:** `space_members` DELETE 이벤트를 받은 클라이언트는 즉시 스페이스를 이탈시킨다. 동시에 서버 측 RLS가 이미 막고 있으므로 클라이언트 처리가 늦어도 데이터는 새지 않는다.
+### DELETE 이벤트는 RLS도 필터도 적용되지 않는다 ⚠
+
+Supabase 공식 문서(Realtime > Postgres Changes)가 명시하는 제약이다:
+
+> "RLS policies are not applied to `DELETE` statements, because there is no way for
+>  Postgres to verify that a user has access to a deleted record."
+>
+> "You can't filter Delete events when tracking Postgres Changes."
+
+즉 `space_members` DELETE를 구독하면 **전체 DB의 모든 강퇴 이벤트**가 필터 없이, RLS 없이
+그 클라이언트로 전달된다. 페이로드는 PK(`space_id`, `user_id`)뿐이지만, 남의 스페이스에서
+누가 빠졌는지가 UUID 수준으로 새어나간다.
+
+**결정: `space_members` DELETE는 구독하지 않는다.**
+
+**강퇴 반영은 조회 결과로 판정한다.** 강퇴당하면 RLS 때문에 그 스페이스 조회가 0행이 된다.
+화면이 재조회했을 때 결과가 비면 스페이스 목록으로 내보낸다.
+따라서 반영 시점은 **즉시가 아니라 다음 조회 시점**이다.
+
+이게 허용되는 이유: 실제 접근 통제는 RLS이고 이미 서버에서 막고 있다. 클라이언트 이탈은
+UX 편의일 뿐 보안 통제가 아니다. 즉시 이탈이 필요해지면 권한이 적용되는
+서버 측 Broadcast 채널로 후속 설계한다(Phase 2 이후).
 
 ---
 
@@ -740,7 +761,7 @@ create policy thumbs_delete on storage.objects for delete
 | 11 | 1회용 토큰 2회 사용 | 두 번째 `INVITE_INVALID` |
 | 12 | 폴더를 자기 하위로 이동 | "폴더를 자기 하위로 이동할 수 없습니다" |
 | 13 | 부모 폴더 이름 변경 후 손자 폴더 `path` 확인 | 하위 전체 갱신됨 |
-| 14 | 강퇴 직후 Realtime 이벤트 수신 | 더 이상 수신 안 됨 |
+| 14 | 강퇴 직후 Realtime 이벤트 수신 | 더 이상 수신 안 됨 (INSERT/UPDATE 한정 — §5 참조) |
 | 15 | 비멤버가 `thumbs` 버킷 객체 요청 | 403 |
 | 16 | 스페이스 생성 직후 생성자가 그 스페이스를 조회 | 1행 (owner 멤버십 자동 생성됨) |
 | 17 | 비멤버가 `create_invite` 호출 | `FORBIDDEN` |
