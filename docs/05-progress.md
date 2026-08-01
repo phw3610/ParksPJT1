@@ -17,7 +17,7 @@
 | 7. iOS 백그라운드 설계 | ✅ | `docs/04-background-upload.md` |
 | 8. 보안·RLS | ✅ | `docs/02-erd-and-rls.md` §3–6 |
 | 9. 프로젝트 구조 | ✅ | 아래 참조 |
-| 10. Phase 1 코드 | 🟡 백엔드 DB 검증 완료 · 클라이언트 런타임 미검증 | 아래 참조 |
+| 10. Phase 1 코드 | 🟡 백엔드(DB·Edge Function) 검증 완료 · 클라이언트 런타임 미검증 | 아래 참조 |
 | 11. Phase별 완료 체크리스트 | 🟡 RLS 20/21 통과, 클라이언트는 미착수 | `docs/02` §7, `docs/04` §7 |
 
 ### 확정 결정 (사용자 승인)
@@ -114,12 +114,29 @@ Supabase 프로젝트 생성, `.env` 작성, 마이그레이션 `0001`~`0005` �
 | 0004 | `INSERT ... RETURNING`이 AFTER 트리거보다 먼저 평가돼 `.insert().select()`가 항상 403이었다. 앱에서 스페이스 생성이 100% 실패했다. |
 | 0005 | `after update **of path**`가 발화하지 않았다. 클라이언트는 `SET name`만 보내므로 cascade가 한 번도 안 돌았다(체크 #13 실패). |
 
-### A-2. 남은 백엔드 작업
-1. Google Cloud Console: Drive API 활성화, OAuth 클라이언트 3종(웹/iOS/Android) 생성,
-   동의 화면에 `drive.file` 스코프 등록 → `.env`의 `EXPO_PUBLIC_GOOGLE_*_CLIENT_ID` 채우기
-2. Edge Function 배포 (`supabase/functions/**`는 작성만 됐고 배포된 적 없다)
-3. `notify` 10분 배치를 발송할 DB Webhook + Scheduled Function(`mode=flush`) 설정
+### A-2. Edge Function — ✅ 배포·검증 완료 (2026-08-01)
+
+`npx supabase functions deploy --project-ref <ref>`로 9개 전부 배포. `--project-ref`를 쓰면
+`supabase link`를 건너뛰므로 **DB 비밀번호가 필요 없다.**
+
+Supabase Secrets에 `GOOGLE_CLIENT_ID` · `GOOGLE_CLIENT_SECRET` ·
+`DOWNLOAD_TICKET_SIGNING_KEY` · `NOTIFY_WEBHOOK_SECRET` 등록 완료.
+
+실측 검증:
+- `notify` + 올바른 `x-webhook-secret` + `mode=flush` → `200 {"ok":true,"batches":0,"sent":0}`
+  → 시크릿 검증, `claim_due_notification_batches` RPC, service_role 권한이 모두 정상.
+- `notify` 시크릿 없이 → `401 FORBIDDEN` (`assertInternalRequest` 작동)
+- `storage-connect` + 실제 사용자 JWT + 가짜 코드 → `401 TOKEN_EXPIRED`
+  → **`GOOGLE_CLIENT_SECRET`이 구글에 실제로 받아들여졌다.** `tokens.ts:56`이
+  `invalid_grant`만 401로 매핑하므로, 시크릿이 틀렸다면 `invalid_client` → 502가 났을 것이다.
+
+### A-3. 남은 백엔드 작업
+1. Google Cloud Console: **Android** OAuth 클라이언트 (EAS 빌드에서 SHA-1이 나온 뒤)
+2. `notify` 10분 배치를 발송할 DB Webhook + Scheduled Function(`mode=flush`) 설정
+3. FCM 서비스 계정 JSON · APNs 키를 Supabase Secrets에 추가 (푸시 실제 발송용)
 4. `npx supabase gen types typescript`로 `database.types.ts` 교체
+5. 나머지 Edge Function 경로(`uploads-*`, `downloads-*`, `assets-delete`)는 실제 Drive
+   연결이 있어야 검증 가능하다 → EAS 빌드로 로그인해 `serverAuthCode`를 받은 뒤
 
 ### B. 클라이언트 런타임 검증
 EAS 개발 빌드로 실기기에서 확인한다 (Expo Go 불가). Google Sign-In 네이티브 모듈,
