@@ -45,3 +45,6 @@ yarn-error.*
 # Orca가 저장소 안에 만드는 worktree 체크아웃
 /phase1-backend
 /phase1-client
+
+# Supabase CLI 로컬 상태 (프로젝트 ref·조직 id가 들어간다)
+supabase/.temp/
