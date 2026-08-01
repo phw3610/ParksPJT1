@@ -179,13 +179,16 @@ create or replace function folders_cascade_path() returns trigger
 language plpgsql as $$
 begin
   if new.path is distinct from old.path then
+    -- CTE가 노드별 **완성된** path를 들고 내려간다. UPDATE에서 다시 이름을 붙이면
+    -- 손자가 `부모path/손자명/손자명`이 되고 depth도 한 단계 모자란다 (체크 #13 실패).
     with recursive sub as (
-      select id, new.path as p, new.depth as d from folders where parent_id = new.id
+      select f.id, new.path || '/' || f.name as p, new.depth + 1 as d
+        from folders f where f.parent_id = new.id
       union all
-      select f.id, sub.p || '/' || f.name, sub.d + 1
-        from folders f join sub on f.parent_id = sub.id
+      select c.id, sub.p || '/' || c.name, sub.d + 1
+        from folders c join sub on c.parent_id = sub.id
     )
-    update folders f set path = sub.p || '/' || f.name, depth = sub.d
+    update folders f set path = sub.p, depth = sub.d
       from sub where f.id = sub.id;
   end if;
   return null;
@@ -325,6 +328,32 @@ create table reactions (
   primary key (asset_id, user_id, emoji)
 );
 ```
+
+### 2.11 notification_batches — 푸시 debounce 상태 (내부 전용)
+
+`docs/03` §2.7의 "10분 창 debounce"는 Edge Function만으로는 구현할 수 없다.
+Edge Function은 호출 간 상태가 없으므로 배치 상태를 DB에 둔다.
+
+```sql
+create table notification_batches (
+  id             uuid primary key default gen_random_uuid(),
+  space_id       uuid not null references spaces(id) on delete cascade,
+  asset_count    int not null default 1 check (asset_count > 0),
+  first_asset_at timestamptz not null default now(),
+  ...
+);
+-- 스페이스당 열린 배치는 1건. 동시 웹훅의 중복 생성을 이 제약으로 막는다.
+create unique index one_open_notification_batch_per_space
+  on notification_batches (space_id) where sent_at is null;
+```
+
+**클라이언트는 이 테이블을 절대 읽지 않는다.** RLS는 켜되 정책을 하나도 만들지 않고
+(`= anon/authenticated에게 0행`), 추가로 `revoke all on notification_batches from anon, authenticated`를 건다.
+적재·소진은 `enqueue_notification_batch` / `claim_due_notification_batches`
+SECURITY DEFINER 함수로만 하고 실행 권한은 `service_role`에만 준다.
+
+10분 창이 지난 배치를 실제로 **발송**하는 주체(pg_cron / Scheduled Function)는 Phase 1 범위 밖이다.
+`notify` 함수의 `mode=flush`를 호출할 외부 스케줄러 설정이 남아 있다.
 
 ---
 

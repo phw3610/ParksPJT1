@@ -1,6 +1,6 @@
 # 05 — 진행 상태 & 다음 작업
 
-최종 갱신: 2026-08-01
+최종 갱신: 2026-08-01 (Phase 1 코드 병합 후)
 
 ---
 
@@ -16,8 +16,8 @@
 | 6. StorageProvider 설계 | ✅ | `docs/03-api-and-storage-provider.md` §3 |
 | 7. iOS 백그라운드 설계 | ✅ | `docs/04-background-upload.md` |
 | 8. 보안·RLS | ✅ | `docs/02-erd-and-rls.md` §3–6 |
-| 9. 프로젝트 구조 | 🟡 진행 중 | 아래 참조 |
-| 10. Phase 1 코드 | ⬜ 미착수 | |
+| 9. 프로젝트 구조 | ✅ | 아래 참조 |
+| 10. Phase 1 코드 | 🟡 작성 완료·런타임 미검증 | 아래 참조 |
 | 11. Phase별 완료 체크리스트 | 🟡 부분 | `docs/02` §7, `docs/04` §7 |
 
 ### 확정 결정 (사용자 승인)
@@ -67,34 +67,51 @@ src/storage/providers/mybox.ts   MYBOX·NAS 비활성 상태 상수 + 미구현 
 
 ---
 
+## Phase 1 코드 — 작성 완료 (2026-08-01)
+
+codex와 antigravity 두 에이전트가 분리된 worktree에서 병렬로 작성해 main에 병합했다.
+`npx tsc --noEmit` **통과** (exit 0). 아래는 **작성**만 끝났고 런타임은 전부 미검증이다.
+
+### 백엔드 (`supabase/`)
+```
+migrations/0001_init.sql      DDL + RLS + 체크리스트 15개 대응 주석
+functions/_shared/            googleDrive · tokens · jwt · push · common · types
+functions/                    storage-connect · storage-disconnect
+                              uploads-create-session · uploads-complete · uploads-fail
+                              downloads-ticket · download · assets-delete · notify
+```
+
+문서와 달라진 지점 (문서는 이 결과에 맞춰 갱신함):
+- `folders_cascade_path`의 재귀 CTE가 틀려 체크 #13이 깨졌다. `docs/02` §2.5로 수정 반영.
+- 푸시 debounce용 `notification_batches` 테이블을 추가했다. `docs/02` §2.11 참조.
+
+### 클라이언트 (`src/`, `app/`)
+```
+src/auth/                     google.ts · AuthProvider.tsx · index.ts
+src/queue/                    db.ts · queue.ts · index.ts (SQLite, 동시 3개, 재개)
+src/storage/uploadResumable.ts  50MB 경계 · expo-file-system/legacy 진행률
+src/components/FolderBrowser.tsx
+app/(auth)/, app/(app)/, app/invite/[token].tsx   docs/01 §5 플로우 전 화면
+```
+
+---
+
 ## 다음 작업 (순서대로)
 
-### A. 백엔드 (코드보다 먼저 필요)
+### A. 백엔드 실제 적용 — 아직 아무것도 실행되지 않았다
 1. Supabase 프로젝트 생성 → `.env` 채우기
-2. `supabase/migrations/0001_init.sql` 작성 — `docs/02` §2·§3의 DDL과 RLS를 그대로 옮긴다
-3. `docs/02` §7의 **검증 체크리스트 15개**를 통과시킨다 (Phase 1 완료 게이트)
+2. `0001_init.sql`을 실제 적용 (지금까지 단 한 번도 실행한 적 없다)
+3. `docs/02` §7의 **검증 체크리스트 15개**를 통과시킨다 (Phase 1 완료 게이트).
+   SQL은 눈으로만 재검토했고 `supabase db lint`조차 실행하지 못했다 (로컬 Postgres·Docker 부재).
 4. Google Cloud Console: Drive API 활성화, OAuth 클라이언트 3종(웹/iOS/Android) 생성,
    동의 화면에 `drive.file` 스코프 등록
+5. `notify` 10분 배치를 발송할 DB Webhook + Scheduled Function(`mode=flush`) 설정
 
-### B. Edge Functions (`supabase/functions/`)
-- `_shared/googleDrive.ts` — `docs/03` §3.3의 GoogleDriveProvider
-- `_shared/tokens.ts` — Vault 복호화 + access token 60분 캐시
-- `storage-connect` / `storage-disconnect`
-- `uploads-create-session` / `uploads-complete` / `uploads-fail`
-- `downloads-ticket` / `download`
-- `assets-delete`
-- `notify` (DB 웹훅, 10분 debounce)
+### B. 클라이언트 런타임 검증
+EAS 개발 빌드로 실기기에서 확인한다 (Expo Go 불가). Google Sign-In 네이티브 모듈,
+미디어 라이브러리 권한, 백그라운드 업로드 재개가 전부 미검증이다.
 
-### C. 클라이언트
-1. `src/auth/` — Google Sign-In(`offlineAccess: true`, `forceCodeForRefreshToken: true`) + 세션 Provider
-2. `src/queue/db.ts` + `queue.ts` — `docs/04` §6의 SQLite 스키마, 동시 3개, 재개 지원
-3. `src/storage/uploadResumable.ts` — 50MB 이하 단일 PUT(`expo-file-system/legacy` 진행률),
-   초과 시 `fetch` + `Blob.slice()` 청크
-4. 화면 — `docs/01` §5 플로우 순서대로:
-   로그인 → 스페이스 목록/생성 → 저장소 연결 → 초대/수락 → 폴더 브라우저 →
-   업로드 → 사진 상세 → 다운로드 → 멤버·역할
-
-### D. 릴리즈 전 필수
+### C. 릴리즈 전 필수
 - [ ] Google에 use case 서면 조회 후 회신 보관 (`docs/phase0` §0.2 H)
 - [ ] `docs/02` §7 RLS 검증 15개 전부 통과
 - [ ] 개인정보처리방침에 썸네일 서버 보관 사실 명시
@@ -106,8 +123,9 @@ src/storage/providers/mybox.ts   MYBOX·NAS 비활성 상태 상수 + 미구현 
 
 1. **`app.json`의 딥링크 도메인이 자리표시자다** (`familyshare.example.com`).
    실제 도메인이 정해지면 `associatedDomains` / `intentFilters` / `EXPO_PUBLIC_INVITE_BASE_URL`을 함께 고친다.
-2. **`src/lib/database.types.ts`는 손으로 작성했다.** 마이그레이션 확정 후
-   `npx supabase gen types typescript`로 재생성해 교체한다.
+2. **`src/lib/database.types.ts`는 여전히 손으로 맞춘 것이다.** `0001_init.sql`에 맞춰
+   갱신했지만 `npx supabase gen types typescript`로 생성한 게 아니다.
+   마이그레이션을 실제 적용한 뒤 반드시 생성본으로 교체한다.
 3. **SDK 54 업로드 진행률은 legacy API에만 있다.** 업로드 경로는
    `expo-file-system/legacy`의 `createUploadTask`를 쓰고, 신 API(`File`/`Directory`)는
    캐시·썸네일 처리에만 쓴다.
