@@ -25,11 +25,27 @@ jobs:
       tag: ${{ steps.ver.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 빌드 번호를 커밋 수로 계산하므로 전체 이력이 필요하다
+
       - id: ver
         run: |
           VERSION=$(node -p "require('./app.json').expo.version")
+          # github.run_number를 쓰면 안 된다. 워크플로 파일 이름을 바꾸는 순간 1로 리셋되어
+          # 예전 태그와 충돌하고, action-gh-release가 그 옛 릴리스에 파일을 덧붙인다.
+          # (실제로 발생: 새 산출물이 7/25자 v1.0.0-build2 릴리스 안에 섞였다.)
+          BUILD=$(git rev-list --count HEAD)
+          TAG="v$VERSION-build$BUILD"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=v$VERSION-build${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Fail if the tag already exists
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${{ steps.ver.outputs.tag }}" >/dev/null 2>&1; then
+            echo "::error::태그 ${{ steps.ver.outputs.tag }} 가 이미 있다. 덮어쓰면 기존 릴리스가 오염된다."
+            exit 1
+          fi
 
       - name: Fail fast if EXPO_PUBLIC_* secrets are missing
         run: |
@@ -60,7 +76,7 @@ jobs:
 
       - name: Set iOS build number
         run: |
-          node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync('app.json'));j.expo.ios.buildNumber='${{ github.run_number }}';fs.writeFileSync('app.json',JSON.stringify(j,null,2));"
+          node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync('app.json'));j.expo.ios.buildNumber='${{ needs.version.outputs.build }}';fs.writeFileSync('app.json',JSON.stringify(j,null,2));"
 
       - name: Generate native iOS project
         run: npx expo prebuild --platform ios
@@ -112,7 +128,7 @@ jobs:
 
       - name: Set Android versionCode
         run: |
-          node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync('app.json'));j.expo.android.versionCode=${{ github.run_number }};fs.writeFileSync('app.json',JSON.stringify(j,null,2));"
+          node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync('app.json'));j.expo.android.versionCode=${{ needs.version.outputs.build }};fs.writeFileSync('app.json',JSON.stringify(j,null,2));"
 
       - name: Generate native Android project
         run: npx expo prebuild --platform android
@@ -146,7 +162,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.version.outputs.tag }}
-          name: v${{ needs.version.outputs.version }} (build ${{ github.run_number }})
+          name: v${{ needs.version.outputs.version }} (build ${{ needs.version.outputs.build }})
           body: |
             **iOS** — unsigned ipa. SideStore/AltStore로 설치하세요.
             **Android** — debug 키로 서명된 release apk. 그대로 설치됩니다.
