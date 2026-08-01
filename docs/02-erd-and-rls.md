@@ -79,6 +79,22 @@ create table profiles (
 );
 ```
 
+**행 생성 경로가 반드시 필요하다.** `profiles`에는 INSERT 정책이 없고,
+`spaces.owner_id`와 `space_members.user_id`가 전부 `profiles(id)`를 참조한다.
+프로필이 없으면 로그인 직후부터 앱에서 아무것도 할 수 없다
+(실측: `spaces` insert가 `23503 spaces_owner_id_fkey` 위반).
+
+`after insert on auth.users` SECURITY DEFINER 트리거로 자동 생성한다
+(`0003_seed_profiles.sql`). `display_name`이 `not null`이므로 폴백 사슬을 둔다:
+
+```
+raw_user_meta_data->>'full_name' → 'name' → email의 @ 앞부분 → '사용자'
+```
+
+Google Sign-In은 `full_name`/`name`을 넣지만 이메일 가입은 아무것도 넣지 않는다.
+**트리거가 실패하면 회원가입 자체가 실패하므로** 어떤 입력에도 예외가 없어야 한다.
+트리거 도입 전 가입한 계정을 위한 백필도 같은 마이그레이션에 포함한다.
+
 ### 2.3 spaces
 
 ```sql
@@ -721,10 +737,14 @@ create policy thumbs_delete on storage.objects for delete
 | 16 | 스페이스 생성 직후 생성자가 그 스페이스를 조회 | 1행 (owner 멤버십 자동 생성됨) |
 | 17 | 비멤버가 `create_invite` 호출 | `FORBIDDEN` |
 | 18 | `create_invite`가 반환한 토큰으로 `accept_invite` | 멤버 추가 성공 |
+| 19 | 신규 가입 직후 `profiles` 행 조회 | 1행 (트리거가 생성함) |
+| 20 | 미인증(anon)이 `accept_invite` 호출 | `AUTH_REQUIRED` (토큰 조회 **전에** 거부) |
+| 21 | anon이 `is_space_member` 등 헬퍼 함수 호출 | `42501 permission denied` |
 
-이 18개는 Phase 1 완료 게이트다. 하나라도 실패하면 배포하지 않는다.
+이 21개는 Phase 1 완료 게이트다. 하나라도 실패하면 배포하지 않는다.
 
 > 16~18은 나중에 추가했다. 원래 15개는 **경로가 아예 없는 것**을 잡지 못했다.
 > 스페이스를 만들면 생성자가 자기 스페이스를 볼 수 없었고(owner 행을 만들 경로 부재),
 > 초대는 `token_hash not null` 때문에 아예 발급이 불가능했다.
 > 정책이 "거부하는지"만 검사하고 "정상 경로가 실제로 뚫려 있는지"는 검사하지 않은 탓이다.
+
