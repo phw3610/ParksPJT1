@@ -8,6 +8,7 @@ import {
   FlatList,
   Modal,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -16,6 +17,7 @@ import {
 } from 'react-native';
 
 import { useAuth } from '@/auth';
+import { FolderPickerModal } from '@/components/FolderPickerModal';
 import type { Asset, Folder, StorageConnection } from '@/lib/database.types';
 import { supabase } from '@/lib/supabase';
 import { colors, radius, spacing, typography } from '@/lib/theme';
@@ -33,6 +35,14 @@ interface FolderBrowserProps {
   folderId?: string | null;
 }
 
+type BreadcrumbFolder = Pick<Folder, 'id' | 'name' | 'path' | 'depth'>;
+
+interface BreadcrumbItem {
+  id: string | null;
+  name: string;
+  isEllipsis?: boolean;
+}
+
 export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) {
   const { user } = useAuth();
   const userId = user?.id;
@@ -41,7 +51,10 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
   const [connection, setConnection] = useState<StorageConnection | null>(null);
   /** 저장소 연결·해제는 sc_all 정책상 소유자만 가능하다. 안내 문구를 역할에 맞춰야 한다. */
   const [isOwner, setIsOwner] = useState(false);
+  const [canWrite, setCanWrite] = useState(false);
   const [currentFolder, setCurrentFolder] = useState<Folder | null>(null);
+  const [breadcrumbFolders, setBreadcrumbFolders] = useState<BreadcrumbFolder[]>([]);
+  const [isBreadcrumbExpanded, setIsBreadcrumbExpanded] = useState(false);
   const [subFolders, setSubFolders] = useState<Folder[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [thumbnailUrls, setThumbnailUrls] = useState<Record<string, string>>({});
@@ -52,11 +65,16 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
   const [showFolderModal, setShowFolderModal] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+  const [showRenameModal, setShowRenameModal] = useState(false);
+  const [renameInput, setRenameInput] = useState('');
+  const [isRenamingFolder, setIsRenamingFolder] = useState(false);
 
   // Multi-select state
   const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(new Set());
   const [isDeletingAssets, setIsDeletingAssets] = useState(false);
   const [isDownloadingAssets, setIsDownloadingAssets] = useState(false);
+  const [showFolderPicker, setShowFolderPicker] = useState(false);
+  const [isMovingAssets, setIsMovingAssets] = useState(false);
   const isMultiSelect = selectedAssetIds.size > 0;
   const realtimeRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -76,7 +94,9 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
           router.replace('/(app)/spaces');
           return;
         }
-        setIsOwner((membership as { role?: string }).role === 'owner');
+        const role = (membership as { role?: string }).role;
+        setIsOwner(role === 'owner');
+        setCanWrite(role === 'owner' || role === 'admin' || role === 'member');
       }
 
       // 1. Connection status
@@ -92,14 +112,39 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
 
       // 2. Current folder if subfolder
       if (folderId) {
-        const { data: f } = await supabase
+        const { data: f, error: folderError } = await supabase
           .from('folders')
           .select('*')
           .eq('id', folderId)
           .single();
-        setCurrentFolder(f);
+        if (folderError) throw folderError;
+        const folder = f as Folder;
+        setCurrentFolder(folder);
+
+        const pathSegments = folder.path.split('/').filter(Boolean);
+        const pathPrefixes = pathSegments.map((_, index) =>
+          pathSegments.slice(0, index + 1).join('/'),
+        );
+        const { data: ancestors, error: ancestorsError } = await supabase
+          .from('folders')
+          .select('id,name,path,depth')
+          .eq('space_id', spaceId)
+          .is('deleted_at', null)
+          .in('path', pathPrefixes);
+        if (ancestorsError) throw ancestorsError;
+
+        const orderByPath = new Map(pathPrefixes.map((path, index) => [path, index]));
+        const ancestorRows = (ancestors || []) as BreadcrumbFolder[];
+        setBreadcrumbFolders(
+          ancestorRows.sort(
+            (left, right) =>
+              (orderByPath.get(left.path) ?? Number.MAX_SAFE_INTEGER) -
+              (orderByPath.get(right.path) ?? Number.MAX_SAFE_INTEGER),
+          ),
+        );
       } else {
         setCurrentFolder(null);
+        setBreadcrumbFolders([]);
       }
 
       // 3. Subfolders
@@ -137,6 +182,10 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
       void fetchData();
     }, [fetchData]),
   );
+
+  useEffect(() => {
+    setIsBreadcrumbExpanded(false);
+  }, [folderId]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -218,6 +267,46 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
       Alert.alert('폴더 생성 실패', e.message);
     } finally {
       setIsCreatingFolder(false);
+    }
+  };
+
+  const openRenameModal = () => {
+    if (!currentFolder) return;
+    setRenameInput(currentFolder.name);
+    setShowRenameModal(true);
+  };
+
+  const handleRenameFolder = async () => {
+    if (!currentFolder) return;
+    const trimmed = renameInput.trim();
+    if (trimmed.length < 1 || trimmed.length > 100) {
+      Alert.alert('알림', '폴더 이름은 1자 이상 100자 이하로 입력해 주세요.');
+      return;
+    }
+    if (trimmed === currentFolder.name) {
+      setShowRenameModal(false);
+      return;
+    }
+
+    setIsRenamingFolder(true);
+    try {
+      const { data, error } = await (supabase.from('folders') as any)
+        .update({ name: trimmed })
+        .eq('id', currentFolder.id)
+        .eq('space_id', spaceId)
+        .select('id')
+        .maybeSingle();
+
+      if (error) throw error;
+      if (!data) throw new Error('폴더를 변경할 권한이 없거나 폴더를 찾을 수 없습니다.');
+
+      setShowRenameModal(false);
+      await fetchData();
+      Alert.alert('완료', '폴더 이름이 변경되었습니다.');
+    } catch (error: any) {
+      Alert.alert('수정 실패', error?.message || '폴더 이름을 변경하지 못했습니다.');
+    } finally {
+      setIsRenamingFolder(false);
     }
   };
 
@@ -306,6 +395,56 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
     }
   };
 
+  const handleMoveSelected = async (targetFolderId: string | null, targetFolderName: string) => {
+    const assetIds = Array.from(selectedAssetIds);
+    if (assetIds.length === 0 || isMovingAssets) return;
+
+    if (targetFolderId === folderId) {
+      setShowFolderPicker(false);
+      Alert.alert('알림', '이미 선택한 폴더에 있는 사진입니다.');
+      return;
+    }
+
+    setIsMovingAssets(true);
+    try {
+      const { data, error } = await (supabase.from('assets') as any)
+        .update({ folder_id: targetFolderId })
+        .eq('space_id', spaceId)
+        .in('id', assetIds)
+        .select('id');
+
+      if (error) throw error;
+
+      const movedRows = (data || []) as Array<{ id: string }>;
+      const movedIds = new Set(movedRows.map((asset) => asset.id));
+      const unmovedIds = assetIds.filter((assetId) => !movedIds.has(assetId));
+
+      setShowFolderPicker(false);
+      setAssets((current) => current.filter((asset) => !movedIds.has(asset.id)));
+      setSelectedAssetIds(new Set(unmovedIds));
+      await fetchData();
+
+      if (unmovedIds.length === 0) {
+        Alert.alert('이동 완료', `${movedIds.size}장의 사진을 '${targetFolderName}'으로 이동했어요.`);
+      } else if (movedIds.size === 0) {
+        Alert.alert(
+          '이동할 수 없음',
+          '선택한 사진을 이동하지 못했습니다. 멤버는 자신이 올린 사진만 옮길 수 있어요.',
+        );
+      } else {
+        Alert.alert(
+          '일부 사진만 이동됨',
+          `${movedIds.size}장 이동, ${unmovedIds.length}장 미이동\n멤버는 자신이 올린 사진만 옮길 수 있어요.`,
+        );
+      }
+    } catch (error: any) {
+      setShowFolderPicker(false);
+      Alert.alert('이동 실패', error?.message || '사진을 이동하지 못했습니다.');
+    } finally {
+      setIsMovingAssets(false);
+    }
+  };
+
   const handleDeleteSelected = () => {
     const assetIds = Array.from(selectedAssetIds);
     if (assetIds.length === 0 || isDeletingAssets) return;
@@ -341,6 +480,34 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
     );
   };
 
+  const allBreadcrumbItems: BreadcrumbItem[] = [
+    { id: null, name: '앨범' },
+    ...breadcrumbFolders.map((folder) => ({ id: folder.id, name: folder.name })),
+  ];
+  const visibleBreadcrumbItems: BreadcrumbItem[] =
+    allBreadcrumbItems.length > 4 && !isBreadcrumbExpanded
+      ? [
+          allBreadcrumbItems[0],
+          { id: null, name: '…', isEllipsis: true },
+          ...allBreadcrumbItems.slice(-2),
+        ]
+      : allBreadcrumbItems;
+
+  const handleBreadcrumbPress = (item: BreadcrumbItem) => {
+    if (item.isEllipsis) {
+      setIsBreadcrumbExpanded(true);
+      return;
+    }
+    if (item.id === folderId || (item.id === null && folderId === null)) return;
+
+    setIsBreadcrumbExpanded(false);
+    if (item.id) {
+      router.dismissTo(`/(app)/spaces/${spaceId}/folder/${item.id}`);
+    } else {
+      router.dismissTo(`/(app)/spaces/${spaceId}`);
+    }
+  };
+
   return (
     <View style={styles.container}>
       {/* 1. Storage Disconnected Warning Banner */}
@@ -365,12 +532,49 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
       {/* 2. Top Header / Actions Bar */}
       <View style={styles.headerBar}>
         <View style={styles.headerLeft}>
-          <Text style={styles.breadText}>
-            {currentFolder ? currentFolder.name : '루트 폴더'}
-          </Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.breadcrumbContent}
+          >
+            {visibleBreadcrumbItems.map((item, index) => {
+              const isCurrent =
+                !item.isEllipsis &&
+                (item.id === folderId || (item.id === null && folderId === null));
+              return (
+                <React.Fragment key={item.isEllipsis ? 'ellipsis' : item.id || 'root'}>
+                  {index > 0 && <Text style={styles.breadcrumbSeparator}>›</Text>}
+                  <TouchableOpacity
+                    style={styles.breadcrumbButton}
+                    onPress={() => handleBreadcrumbPress(item)}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: isCurrent }}
+                    accessibilityLabel={
+                      item.isEllipsis ? '숨겨진 상위 폴더 펼치기' : `${item.name} 폴더로 이동`
+                    }
+                  >
+                    <Text
+                      style={[
+                        styles.breadcrumbText,
+                        isCurrent && styles.breadcrumbCurrentText,
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {item.name}
+                    </Text>
+                  </TouchableOpacity>
+                </React.Fragment>
+              );
+            })}
+          </ScrollView>
         </View>
 
         <View style={styles.headerRight}>
+          {currentFolder && canWrite && (
+            <TouchableOpacity style={styles.iconBtn} onPress={openRenameModal}>
+              <Text style={styles.iconBtnText}>이름 변경</Text>
+            </TouchableOpacity>
+          )}
           <TouchableOpacity
             style={styles.iconBtn}
             onPress={() => router.push(`/(app)/spaces/${spaceId}/members`)}
@@ -393,6 +597,14 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
           <Text style={[typography.caption, styles.mtSm]}>
             아래 [+] 버튼을 눌러 사진을 올려보세요.
           </Text>
+          {canWrite && (
+            <TouchableOpacity
+              style={[styles.addFolderBtn, styles.emptyFolderBtn]}
+              onPress={() => setShowFolderModal(true)}
+            >
+              <Text style={styles.addFolderBtnText}>새 폴더 만들기</Text>
+            </TouchableOpacity>
+          )}
         </View>
       ) : (
         <FlatList
@@ -407,9 +619,11 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
               <View style={styles.subFolderSection}>
                 <View style={styles.sectionHeader}>
                   <Text style={styles.sectionTitle}>하위 폴더 ({subFolders.length})</Text>
-                  <TouchableOpacity onPress={() => setShowFolderModal(true)}>
-                    <Text style={styles.addFolderText}>+ 새 폴더</Text>
-                  </TouchableOpacity>
+                  {canWrite && (
+                    <TouchableOpacity onPress={() => setShowFolderModal(true)}>
+                      <Text style={styles.addFolderText}>+ 새 폴더</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
 
                 <View style={styles.folderGrid}>
@@ -431,12 +645,14 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
               </View>
             ) : (
               <View style={styles.subFolderSection}>
-                <TouchableOpacity
-                  style={styles.addFolderBtn}
-                  onPress={() => setShowFolderModal(true)}
-                >
-                  <Text style={styles.addFolderBtnText}>+ 새 폴더 만들기</Text>
-                </TouchableOpacity>
+                {canWrite && (
+                  <TouchableOpacity
+                    style={styles.addFolderBtn}
+                    onPress={() => setShowFolderModal(true)}
+                  >
+                    <Text style={styles.addFolderBtnText}>+ 새 폴더 만들기</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             )
           }
@@ -515,6 +731,17 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
                 {isDownloadingAssets ? '저장 중...' : '다운로드'}
               </Text>
             </TouchableOpacity>
+            {canWrite && (
+              <TouchableOpacity
+                style={[styles.multiBtn, isMovingAssets && styles.disabledBtn]}
+                onPress={() => setShowFolderPicker(true)}
+                disabled={isMovingAssets}
+              >
+                <Text style={styles.multiBtnText}>
+                  {isMovingAssets ? '이동 중...' : '이동'}
+                </Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity
               style={[
                 styles.multiBtn,
@@ -537,6 +764,17 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
           </View>
         </View>
       )}
+
+      <FolderPickerModal
+        visible={showFolderPicker}
+        spaceId={spaceId}
+        currentFolderId={folderId}
+        busy={isMovingAssets}
+        onClose={() => setShowFolderPicker(false)}
+        onSelect={(targetFolderId, targetFolderName) => {
+          void handleMoveSelected(targetFolderId, targetFolderName);
+        }}
+      />
 
       {/* Floating [+] Upload Button */}
       {!isMultiSelect && (
@@ -568,6 +806,42 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
                 disabled={isCreatingFolder}
               >
                 <Text style={styles.modalConfirmText}>생성</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Rename Folder Modal — 스페이스 이름 변경과 동일한 입력 패턴 */}
+      <Modal visible={showRenameModal} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={typography.heading}>폴더 이름 변경</Text>
+            <Text style={[typography.caption, styles.modalSub]}>
+              1자 이상 100자 이하로 입력해 주세요.
+            </Text>
+            <TextInput
+              style={styles.modalInput}
+              placeholder="폴더 이름"
+              placeholderTextColor={colors.textMuted}
+              value={renameInput}
+              onChangeText={setRenameInput}
+              maxLength={100}
+              autoFocus
+            />
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => setShowRenameModal(false)}
+              >
+                <Text style={styles.modalCancelText}>취소</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalConfirmBtn, isRenamingFolder && styles.disabledBtn]}
+                onPress={handleRenameFolder}
+                disabled={isRenamingFolder}
+              >
+                <Text style={styles.modalConfirmText}>저장</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -606,15 +880,36 @@ const styles = StyleSheet.create({
   },
   headerLeft: {
     flex: 1,
+    minWidth: 0,
+    marginRight: spacing.xs,
   },
-  breadText: {
+  breadcrumbContent: {
+    alignItems: 'center',
+    paddingVertical: 2,
+  },
+  breadcrumbButton: {
+    maxWidth: 120,
+    paddingHorizontal: 3,
+    paddingVertical: 4,
+  },
+  breadcrumbText: {
+    color: colors.textMuted,
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  breadcrumbCurrentText: {
     color: colors.text,
-    fontSize: 16,
     fontWeight: '700',
+  },
+  breadcrumbSeparator: {
+    color: colors.textMuted,
+    marginHorizontal: 2,
+    fontSize: 15,
   },
   headerRight: {
     flexDirection: 'row',
     gap: spacing.xs,
+    flexShrink: 0,
   },
   iconBtn: {
     backgroundColor: colors.surfaceAlt,
@@ -770,19 +1065,26 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: spacing.xs,
   },
   multiCount: {
     color: colors.text,
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: '600',
   },
+  emptyFolderBtn: {
+    marginTop: spacing.md,
+  },
   multiBtns: {
+    flex: 1,
     flexDirection: 'row',
-    gap: spacing.sm,
+    justifyContent: 'flex-end',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
   },
   multiBtn: {
     backgroundColor: colors.primary,
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     paddingVertical: 8,
     borderRadius: radius.sm,
   },
@@ -838,6 +1140,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: radius.md,
     padding: spacing.lg,
+  },
+  modalSub: {
+    marginTop: spacing.xs,
   },
   modalInput: {
     backgroundColor: colors.surfaceAlt,
