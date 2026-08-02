@@ -73,7 +73,7 @@ export default function AssetDetailScreen() {
     const loadAssetsData = async () => {
       setIsLoading(true);
       try {
-        // 단일 asset 정보 우선 조회
+        // 1. 단일 targetAsset 정보 조회
         const { data: rawTargetAsset, error: targetError } = await supabase
           .from('assets')
           .select('*')
@@ -90,52 +90,125 @@ export default function AssetDetailScreen() {
           return;
         }
 
-        // 범위에 맞게 사진 목록 조회
-        // - 타임라인 범위(source=timeline): 스페이스 전체 사진 (folder_id 필터 없음)
-        // - 폴더 범위(기본값): targetAsset.folder_id와 동일한 폴더 내 사진
-        let query = supabase
-          .from('assets')
-          .select('*')
-          .eq('space_id', spaceId)
-          .is('deleted_at', null);
-
         if (!isTimelineScope) {
+          // --- 폴더 범위 (source !== 'timeline') ---
+          // 기존 동작 100% 동일 보장: targetAsset.folder_id 내 전체 사진 조회 (페이지네이션 없음)
           const folderId = targetAsset.folder_id;
+          let query = supabase
+            .from('assets')
+            .select('*')
+            .eq('space_id', spaceId)
+            .is('deleted_at', null);
+
           if (folderId) {
             query = query.eq('folder_id', folderId);
           } else {
             query = query.is('folder_id', null);
           }
-        }
 
-        // 타임라인 범위는 사진 수량이 많을 수 있으므로 PAGE_SIZE 단위로 1페이지 제한
-        if (isTimelineScope) {
-          query = query.range(0, PAGE_SIZE - 1);
-        }
+          const { data: rawList, error: listError } = await query
+            .order('captured_at', { ascending: false, nullsFirst: false })
+            .order('created_at', { ascending: false });
 
-        const { data: rawList, error: listError } = await query
-          .order('captured_at', { ascending: false, nullsFirst: false })
-          .order('created_at', { ascending: false });
+          const list = (rawList as Asset[] | null) ?? [];
 
-        const list = (rawList as Asset[] | null) ?? [];
+          if (isCancelled) return;
 
-        if (isCancelled) return;
-
-        if (listError || list.length === 0) {
-          setAssetsList([targetAsset]);
-          setCurrentIndex(0);
-          setHasMore(false);
-        } else {
-          const idx = list.findIndex((a) => a.id === assetId);
-          if (idx !== -1) {
-            setAssetsList(list);
-            setCurrentIndex(idx);
-            setHasMore(isTimelineScope ? list.length >= PAGE_SIZE : false);
-          } else {
-            // 타임라인 1페이지에 진입 asset이 포함되지 않은 경우(더 아래 위치), 진입 asset을 맨 앞에 포함
-            setAssetsList([targetAsset, ...list]);
+          if (listError || list.length === 0) {
+            setAssetsList([targetAsset]);
             setCurrentIndex(0);
-            setHasMore(isTimelineScope ? list.length >= PAGE_SIZE : false);
+          } else {
+            const idx = list.findIndex((a) => a.id === assetId);
+            if (idx !== -1) {
+              setAssetsList(list);
+              setCurrentIndex(idx);
+            } else {
+              setAssetsList([targetAsset, ...list]);
+              setCurrentIndex(0);
+            }
+          }
+        } else {
+          // --- 타임라인 범위 (source === 'timeline') ---
+          // 1. 정렬 계약(.order('captured_at', { ascending: false, nullsFirst: false }).order('created_at', { ascending: false }))에 따라
+          //    targetAsset보다 타임라인 순서상 앞서는 사진 수(precedingCount)를 먼저 계산
+          let precedingCount = 0;
+          try {
+            if (targetAsset.captured_at) {
+              const capAt = targetAsset.captured_at;
+              const createAt = targetAsset.created_at;
+              const { count, error: countErr } = await supabase
+                .from('assets')
+                .select('id', { count: 'exact', head: true })
+                .eq('space_id', spaceId)
+                .is('deleted_at', null)
+                .or(
+                  `captured_at.gt.${capAt},and(captured_at.eq.${capAt},created_at.gt.${createAt})`
+                );
+
+              if (!countErr && typeof count === 'number') {
+                precedingCount = count;
+              }
+            } else {
+              const createAt = targetAsset.created_at;
+              const { count, error: countErr } = await supabase
+                .from('assets')
+                .select('id', { count: 'exact', head: true })
+                .eq('space_id', spaceId)
+                .is('deleted_at', null)
+                .or(
+                  `captured_at.not.is.null,and(captured_at.is.null,created_at.gt.${createAt})`
+                );
+
+              if (!countErr && typeof count === 'number') {
+                precedingCount = count;
+              }
+            }
+          } catch {
+            precedingCount = 0;
+          }
+
+          // 2. targetAsset 위치(precedingCount)가 포함된 범위 계산
+          //    precedingCount <= 100 인 경우 0부터 (precedingCount + 35)까지 전체 포함하여 0번(첫 사진)부터 이전 사진 탐색 보장
+          //    precedingCount > 100 인 경우 (precedingCount - 18)부터 (precedingCount + 36)까지 창(Window) 형태로 가져옴
+          let from = 0;
+          let to = PAGE_SIZE - 1;
+
+          if (precedingCount <= 100) {
+            from = 0;
+            to = Math.max(PAGE_SIZE - 1, precedingCount + 35);
+          } else {
+            from = Math.max(0, precedingCount - 18);
+            to = precedingCount + 36;
+          }
+
+          const { data: rawList, error: listError } = await supabase
+            .from('assets')
+            .select('*')
+            .eq('space_id', spaceId)
+            .is('deleted_at', null)
+            .order('captured_at', { ascending: false, nullsFirst: false })
+            .order('created_at', { ascending: false })
+            .range(from, to);
+
+          const list = (rawList as Asset[] | null) ?? [];
+
+          if (isCancelled) return;
+
+          if (listError || list.length === 0) {
+            setAssetsList([targetAsset]);
+            setCurrentIndex(0);
+            setHasMore(false);
+          } else {
+            const idx = list.findIndex((a) => a.id === assetId);
+            if (idx !== -1) {
+              setAssetsList(list);
+              setCurrentIndex(idx);
+              setHasMore(list.length >= (to - from + 1));
+            } else {
+              setAssetsList([targetAsset, ...list]);
+              setCurrentIndex(0);
+              setHasMore(list.length >= (to - from + 1));
+            }
           }
         }
       } catch {
