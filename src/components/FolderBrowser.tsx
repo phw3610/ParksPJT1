@@ -109,7 +109,7 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
       } else {
         folderQuery = folderQuery.is('parent_id', null);
       }
-      const { data: subF } = await folderQuery;
+      const { data: subF } = await folderQuery.order('name', { ascending: true });
       setSubFolders(subF || []);
 
       // 4. Assets in this folder
@@ -119,7 +119,10 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
       } else {
         assetQuery = assetQuery.is('folder_id', null);
       }
-      const { data: ass } = await assetQuery;
+      // 상세 화면의 좌우 스와이프가 그리드와 같은 순서를 따라야 하므로 정렬을 고정한다.
+      const { data: ass } = await assetQuery
+        .order('captured_at', { ascending: false, nullsFirst: false })
+        .order('created_at', { ascending: false });
       setAssets(ass || []);
     } catch {
       /* 에러 무시 */
