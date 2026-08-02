@@ -152,6 +152,8 @@ export class GoogleDriveProvider implements StorageProvider {
     }
     return {
       uploadUrl,
+      protocol: "drive-resumable",
+      remoteFileId: null,
       chunkSize: 8 * 1024 * 1024,
       expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
     };

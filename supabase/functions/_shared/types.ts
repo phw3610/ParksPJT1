@@ -38,6 +38,17 @@ export interface UploadInput {
 
 export interface UploadSession {
   uploadUrl: string | null;
+  /**
+   * 바이트를 보내는 방식. provider마다 다르므로 클라이언트가 크기로 추측하면 안 된다.
+   * - `drive-resumable`: 50MB 초과 시 Content-Range 청크 전송 (Google Drive)
+   * - `single`: 크기와 무관하게 한 번의 PUT (S3 presigned URL)
+   */
+  protocol: "drive-resumable" | "single";
+  /**
+   * 업로드가 끝난 뒤 원본을 가리킬 식별자를 미리 아는 provider가 채운다.
+   * S3는 키를 우리가 정하므로 미리 안다. Drive는 업로드 응답에서만 알 수 있어 null이다.
+   */
+  remoteFileId?: string | null;
   chunkSize: number;
   expiresAt: string;
 }
