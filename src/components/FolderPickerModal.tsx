@@ -19,6 +19,7 @@ interface FolderPickerModalProps {
   visible: boolean;
   spaceId: string;
   currentFolderId?: string | null;
+  excludedPathPrefix?: string | null;
   busy?: boolean;
   onClose: () => void;
   onSelect: (folderId: string | null, folderName: string) => void;
@@ -28,6 +29,7 @@ export function FolderPickerModal({
   visible,
   spaceId,
   currentFolderId = null,
+  excludedPathPrefix = null,
   busy = false,
   onClose,
   onSelect,
@@ -59,6 +61,14 @@ export function FolderPickerModal({
   useEffect(() => {
     if (visible) void loadFolders();
   }, [loadFolders, visible]);
+
+  const selectableFolders = excludedPathPrefix
+    ? folders.filter(
+        (folder) =>
+          folder.path !== excludedPathPrefix &&
+          !folder.path.startsWith(`${excludedPathPrefix}/`),
+      )
+    : folders;
 
   return (
     <Modal
@@ -105,10 +115,10 @@ export function FolderPickerModal({
             </View>
           ) : (
             <FlatList
-              data={folders}
+              data={selectableFolders}
               keyExtractor={(folder) => folder.id}
               style={styles.list}
-              contentContainerStyle={folders.length === 0 && styles.emptyList}
+              contentContainerStyle={selectableFolders.length === 0 && styles.emptyList}
               ListEmptyComponent={<Text style={styles.emptyText}>만든 폴더가 없습니다.</Text>}
               renderItem={({ item }) => {
                 const isCurrent = currentFolderId === item.id;

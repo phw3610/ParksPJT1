@@ -95,6 +95,10 @@ function queueNeedsReconnect(items: UploadQueueItem[], spaceId: string): boolean
   );
 }
 
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, '\\$&');
+}
+
 export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) {
   const { user } = useAuth();
   const userId = user?.id;
@@ -104,6 +108,7 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
   const [hasReconnectPausedItem, setHasReconnectPausedItem] = useState(false);
   /** 저장소 연결·해제는 sc_all 정책상 소유자만 가능하다. 안내 문구를 역할에 맞춰야 한다. */
   const [isOwner, setIsOwner] = useState(false);
+  const [canManage, setCanManage] = useState(false);
   const [canWrite, setCanWrite] = useState(false);
   const [currentFolder, setCurrentFolder] = useState<Folder | null>(null);
   const [breadcrumbFolders, setBreadcrumbFolders] = useState<BreadcrumbFolder[]>([]);
@@ -121,6 +126,9 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
   const [showRenameModal, setShowRenameModal] = useState(false);
   const [renameInput, setRenameInput] = useState('');
   const [isRenamingFolder, setIsRenamingFolder] = useState(false);
+  const [showFolderMovePicker, setShowFolderMovePicker] = useState(false);
+  const [isMovingFolder, setIsMovingFolder] = useState(false);
+  const [isDeletingFolder, setIsDeletingFolder] = useState(false);
 
   // Multi-select state
   const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(new Set());
@@ -149,6 +157,7 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
         }
         const role = (membership as { role?: string }).role;
         setIsOwner(role === 'owner');
+        setCanManage(role === 'owner' || role === 'admin');
         setCanWrite(role === 'owner' || role === 'admin' || role === 'member');
       }
 
@@ -385,6 +394,129 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
       Alert.alert('수정 실패', error?.message || '폴더 이름을 변경하지 못했습니다.');
     } finally {
       setIsRenamingFolder(false);
+    }
+  };
+
+  const handleMoveCurrentFolder = async (
+    targetParentId: string | null,
+    targetFolderName: string,
+  ) => {
+    if (!currentFolder || isMovingFolder) return;
+
+    if (targetParentId === currentFolder.parent_id) {
+      setShowFolderMovePicker(false);
+      Alert.alert('알림', '이미 선택한 위치에 있는 폴더입니다.');
+      return;
+    }
+
+    setIsMovingFolder(true);
+    try {
+      // path와 depth는 folders_guard 및 cascade 트리거가 계산한다.
+      const { data, error } = await (supabase.from('folders') as any)
+        .update({ parent_id: targetParentId })
+        .eq('id', currentFolder.id)
+        .eq('space_id', spaceId)
+        .select('id,parent_id,path,depth')
+        .maybeSingle();
+
+      if (error) throw error;
+      if (!data) throw new Error('폴더를 이동할 권한이 없거나 폴더를 찾을 수 없습니다.');
+
+      setShowFolderMovePicker(false);
+      await fetchData();
+      Alert.alert('이동 완료', `'${currentFolder.name}' 폴더를 '${targetFolderName}'으로 이동했어요.`);
+    } catch (error: any) {
+      setShowFolderMovePicker(false);
+      Alert.alert('이동 실패', error?.message || '폴더를 이동하지 못했습니다.');
+    } finally {
+      setIsMovingFolder(false);
+    }
+  };
+
+  const handleDeleteCurrentFolder = async () => {
+    if (!currentFolder || !canManage || isDeletingFolder) return;
+
+    const folderToDelete = currentFolder;
+    setIsDeletingFolder(true);
+    try {
+      const descendantPattern = `${escapeLikePattern(folderToDelete.path)}/%`;
+      const {
+        data: descendantFolders,
+        count: descendantCount,
+        error: descendantError,
+      } = await supabase
+        .from('folders')
+        .select('id', { count: 'exact' })
+        .eq('space_id', spaceId)
+        .is('deleted_at', null)
+        .like('path', descendantPattern);
+
+      if (descendantError) throw descendantError;
+
+      const affectedFolderIds = [
+        folderToDelete.id,
+        ...((descendantFolders || []) as Array<{ id: string }>).map((folder) => folder.id),
+      ];
+      const { count: affectedAssetCount, error: assetCountError } = await supabase
+        .from('assets')
+        .select('id', { count: 'exact', head: true })
+        .eq('space_id', spaceId)
+        .is('deleted_at', null)
+        .in('folder_id', affectedFolderIds);
+
+      if (assetCountError) throw assetCountError;
+
+      Alert.alert(
+        '폴더 삭제',
+        `'${folderToDelete.name}' 폴더와 하위 폴더 ${descendantCount ?? 0}개를 삭제할까요?\n\n이 폴더들에 있는 사진 ${affectedAssetCount ?? 0}장은 앨범 최상위로 이동해 앱에서 계속 보입니다. Google Drive 원본은 삭제되지 않습니다.`,
+        [
+          {
+            text: '취소',
+            style: 'cancel',
+            onPress: () => setIsDeletingFolder(false),
+          },
+          {
+            text: '삭제',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                const { data, error } = await (supabase.from('folders') as any)
+                  .delete()
+                  .eq('id', folderToDelete.id)
+                  .eq('space_id', spaceId)
+                  .select('id')
+                  .maybeSingle();
+
+                if (error) throw error;
+                if (!data) {
+                  throw new Error('폴더를 삭제할 권한이 없거나 폴더를 찾을 수 없습니다.');
+                }
+
+                // 상위 화면이 다시 포커스되며 기존 useFocusEffect의 fetchData가 목록을 갱신한다.
+                if (folderToDelete.parent_id) {
+                  router.dismissTo(
+                    `/(app)/spaces/${spaceId}/folder/${folderToDelete.parent_id}`,
+                  );
+                } else {
+                  router.dismissTo(`/(app)/spaces/${spaceId}`);
+                }
+                Alert.alert(
+                  '삭제 완료',
+                  `폴더를 삭제했습니다. 사진 ${affectedAssetCount ?? 0}장은 앨범 최상위에서 계속 볼 수 있고 Google Drive 원본은 그대로 남아 있습니다.`,
+                );
+              } catch (error: any) {
+                Alert.alert('삭제 실패', error?.message || '폴더를 삭제하지 못했습니다.');
+              } finally {
+                setIsDeletingFolder(false);
+              }
+            },
+          },
+        ],
+        { cancelable: false },
+      );
+    } catch (error: any) {
+      setIsDeletingFolder(false);
+      Alert.alert('삭제 정보 확인 실패', error?.message || '폴더 내용을 확인하지 못했습니다.');
     }
   };
 
@@ -720,11 +852,6 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
         </View>
 
         <View style={styles.headerRight}>
-          {currentFolder && canWrite && (
-            <TouchableOpacity style={styles.iconBtn} onPress={openRenameModal}>
-              <Text style={styles.iconBtnText}>이름 변경</Text>
-            </TouchableOpacity>
-          )}
           <TouchableOpacity
             style={styles.iconBtn}
             onPress={() => router.push(`/(app)/spaces/${spaceId}/members`)}
@@ -735,6 +862,43 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
               여기서는 역할과 무관하게 노출됐고, 하위 폴더에서도 중복으로 떴다. */}
         </View>
       </View>
+
+      {currentFolder && canWrite && (
+        <View style={styles.folderActionBar}>
+          <Text style={styles.folderActionTitle} numberOfLines={1}>
+            📁 {currentFolder.name}
+          </Text>
+          <View style={styles.folderActionButtons}>
+            <TouchableOpacity
+              style={styles.folderActionButton}
+              onPress={openRenameModal}
+              disabled={isMovingFolder || isDeletingFolder}
+            >
+              <Text style={styles.folderActionText}>이름 변경</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.folderActionButton}
+              onPress={() => setShowFolderMovePicker(true)}
+              disabled={isMovingFolder || isDeletingFolder}
+            >
+              <Text style={styles.folderActionText}>
+                {isMovingFolder ? '이동 중...' : '폴더 이동'}
+              </Text>
+            </TouchableOpacity>
+            {canManage && (
+              <TouchableOpacity
+                style={[styles.folderActionButton, styles.folderDeleteButton]}
+                onPress={() => void handleDeleteCurrentFolder()}
+                disabled={isMovingFolder || isDeletingFolder}
+              >
+                <Text style={styles.folderDeleteText}>
+                  {isDeletingFolder ? '확인 중...' : '폴더 삭제'}
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+      )}
 
       {/* 3. Folder & Asset Content */}
       {isLoading ? (
@@ -923,6 +1087,18 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
         onClose={() => setShowFolderPicker(false)}
         onSelect={(targetFolderId, targetFolderName) => {
           void handleMoveSelected(targetFolderId, targetFolderName);
+        }}
+      />
+
+      <FolderPickerModal
+        visible={showFolderMovePicker}
+        spaceId={spaceId}
+        currentFolderId={currentFolder?.parent_id ?? null}
+        excludedPathPrefix={currentFolder?.path ?? null}
+        busy={isMovingFolder}
+        onClose={() => setShowFolderMovePicker(false)}
+        onSelect={(targetParentId, targetFolderName) => {
+          void handleMoveCurrentFolder(targetParentId, targetFolderName);
         }}
       />
 
@@ -1216,6 +1392,49 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     gap: spacing.xs,
+  },
+  folderActionBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    backgroundColor: colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  folderActionTitle: {
+    flex: 1,
+    minWidth: 0,
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  folderActionButtons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    flexShrink: 0,
+  },
+  folderActionButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surfaceAlt,
+  },
+  folderActionText: {
+    color: colors.text,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  folderDeleteButton: {
+    backgroundColor: 'rgba(248, 113, 113, 0.15)',
+  },
+  folderDeleteText: {
+    color: colors.danger,
+    fontSize: 11,
+    fontWeight: '600',
   },
   multiCount: {
     color: colors.text,
