@@ -28,6 +28,18 @@ interface InvitePreview {
   asset_count: number;
 }
 
+function getAcceptInviteErrorMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : String((error as { message?: unknown })?.message ?? error);
+
+  if (message.includes('AUTH_REQUIRED')) {
+    return '로그인한 뒤 초대를 다시 수락해 주세요.';
+  }
+  if (message.includes('INVITE_INVALID')) {
+    return '취소되었거나 만료되었거나 사용 횟수를 모두 쓴 초대입니다. 초대한 분에게 새 코드를 요청해 주세요.';
+  }
+  return message || '초대를 수락하지 못했습니다.';
+}
+
 export default function AcceptInviteScreen() {
   const { token } = useLocalSearchParams<{ token: string }>();
   const { session, isLoading: authLoading } = useAuth();
@@ -48,7 +60,7 @@ export default function AcceptInviteScreen() {
         if (data && data.length > 0) {
           setPreview(data[0]);
         } else {
-          setErrorMsg('만료되거나 올바르지 않은 초대 링크입니다.');
+          setErrorMsg('취소되었거나 만료되었거나 사용 횟수를 모두 쓴 초대입니다. 초대한 분에게 새 코드를 요청해 주세요.');
         }
       } catch (e: any) {
         setErrorMsg(e.message || '초대 정보를 불러오지 못했습니다.');
@@ -74,8 +86,13 @@ export default function AcceptInviteScreen() {
 
       Alert.alert('참여 완료!', '가족 앨범에 참여했습니다.');
       router.replace(`/(app)/spaces/${spaceId}`);
-    } catch (e: any) {
-      Alert.alert('참여 실패', e.message || '초대를 수락하지 못했습니다.');
+    } catch (error) {
+      const message = getAcceptInviteErrorMessage(error);
+      if (message.includes('새 코드를 요청')) {
+        setPreview(null);
+        setErrorMsg(message);
+      }
+      Alert.alert('참여 실패', message);
     } finally {
       setIsAccepting(false);
     }
