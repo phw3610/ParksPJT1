@@ -6,15 +6,15 @@ import { supabase } from '@/lib/supabase';
 
 export const THUMBNAIL_URL_TTL_SECONDS = 60 * 60;
 export const THUMBNAIL_URL_REFRESH_MS = 55 * 60 * 1000;
-// 16:9 사진도 짧은 변 1440px를 남겨 QHD급 상세 화면을 채울 수 있다.
-export const THUMBNAIL_MAX_LONG_EDGE_PX = 2560;
-// 전체 화면에서 JPEG 아티팩트를 억제하면서 원본 대비 전송량을 크게 줄이는 균형값이다.
-export const THUMBNAIL_JPEG_QUALITY = 0.8;
+// 3열 그리드의 약 130pt 셀은 @3x iPhone에서 약 390px이므로 400px이면 충분하다.
+export const THUMBNAIL_MAX_LONG_EDGE_PX = 400;
+// 작은 그리드 셀에서 품질을 유지하면서 일반 사진을 대략 수십 KB로 줄이는 균형값이다.
+export const THUMBNAIL_JPEG_QUALITY = 0.75;
 
 type ThumbnailAsset = Pick<Asset, 'id' | 'thumb_path'>;
 
 /**
- * 상세 화면에서도 쓰이는 미리보기를 긴 변 2560px 이하의 JPEG로 만든다.
+ * 3열 그리드에서 쓰이는 미리보기를 긴 변 400px 이하의 JPEG로 만든다.
  * ImageManipulator가 먼저 표시 방향을 픽셀에 반영하며, File.bytes()로 base64 복제를 피한다.
  */
 export async function readThumbnailUploadBody(fileUri: string): Promise<ArrayBuffer> {

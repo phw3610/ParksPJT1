@@ -1,4 +1,4 @@
-import { Image } from 'expo-image';
+import { Image, type ImageSource } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -18,7 +18,7 @@ import { FolderPickerModal } from '@/components/FolderPickerModal';
 import type { Asset } from '@/lib/database.types';
 import { supabase } from '@/lib/supabase';
 import { colors, radius, spacing, typography } from '@/lib/theme';
-import { deleteAssets } from '@/storage/client';
+import { deleteAssets, getDownloadTickets } from '@/storage/client';
 import {
   CameraRollDownloadError,
   downloadSingleAssetToCameraRoll,
@@ -29,6 +29,21 @@ import {
 } from '@/storage/thumbnails';
 
 const PAGE_SIZE = 36;
+
+interface OriginalPreview {
+  assetId: string;
+  cacheKey: string;
+  source: ImageSource;
+  expiresAt: string | null;
+}
+
+function getOriginalCacheKey(asset: Asset): string {
+  return `asset-original:${asset.id}:${asset.remote_file_id ?? 'pending'}`;
+}
+
+function toFileUri(path: string): string {
+  return path.startsWith('file://') ? path : `file://${path}`;
+}
 
 export default function AssetDetailScreen() {
   const { spaceId, assetId, source } = useLocalSearchParams<{
@@ -44,6 +59,8 @@ export default function AssetDetailScreen() {
   const [assetsList, setAssetsList] = useState<Asset[]>([]);
   const [currentIndex, setCurrentIndex] = useState<number>(0);
   const [thumbnailUrls, setThumbnailUrls] = useState<Record<string, string>>({});
+  const [originalPreview, setOriginalPreview] = useState<OriginalPreview | null>(null);
+  const [originalReloadNonce, setOriginalReloadNonce] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [isDownloading, setIsDownloading] = useState(false);
   const [showFolderPicker, setShowFolderPicker] = useState(false);
@@ -53,6 +70,11 @@ export default function AssetDetailScreen() {
 
   const flatListRef = useRef<FlatList<Asset>>(null);
   const assetsListRef = useRef<Asset[]>([]);
+  const originalAttemptRef = useRef<{ assetId: string | null; retryCount: number }>({
+    assetId: null,
+    retryCount: 0,
+  });
+  const originalPreviewCacheRef = useRef(new Map<string, OriginalPreview>());
   assetsListRef.current = assetsList;
 
   // 1. assetId나 spaceId 변경 시 사진 목록 조회
@@ -319,6 +341,154 @@ export default function AssetDetailScreen() {
 
   const currentAsset = assetsList[currentIndex] ?? null;
 
+  // 현재 보고 있는 사진만 원본 티켓을 발급한다. 이전에 받은 원본은 안정적인 cacheKey로 재사용한다.
+  useEffect(() => {
+    const asset = currentAsset;
+    if (
+      !asset ||
+      asset.kind !== 'image' ||
+      asset.status !== 'ready' ||
+      !asset.remote_file_id
+    ) {
+      setOriginalPreview(null);
+      return;
+    }
+
+    if (originalAttemptRef.current.assetId !== asset.id) {
+      originalAttemptRef.current = { assetId: asset.id, retryCount: 0 };
+    }
+
+    const forceFreshTicket = originalAttemptRef.current.retryCount > 0;
+    const cacheKey = getOriginalCacheKey(asset);
+    let isCancelled = false;
+
+    const loadOriginalPreview = async () => {
+      setOriginalPreview(null);
+
+      try {
+        if (!forceFreshTicket) {
+          let cachedPath: string | null = null;
+          try {
+            cachedPath = await Image.getCachePathAsync(cacheKey);
+          } catch (error) {
+            console.warn('[asset-detail] 원본 이미지 캐시를 확인하지 못했습니다.', error);
+          }
+          if (isCancelled) return;
+
+          if (cachedPath) {
+            const cachedPreview: OriginalPreview = {
+              assetId: asset.id,
+              cacheKey,
+              source: { uri: toFileUri(cachedPath), cacheKey },
+              expiresAt: null,
+            };
+            originalPreviewCacheRef.current.set(asset.id, cachedPreview);
+            setOriginalPreview(cachedPreview);
+            return;
+          }
+
+          const rememberedPreview = originalPreviewCacheRef.current.get(asset.id);
+          if (rememberedPreview?.cacheKey === cacheKey) {
+            setOriginalPreview(rememberedPreview);
+            return;
+          }
+        }
+
+        const { tickets } = await getDownloadTickets([asset.id]);
+        if (isCancelled) return;
+
+        const ticket = tickets.find((candidate) => candidate.assetId === asset.id);
+        const expiresAtMs = ticket ? Date.parse(ticket.expiresAt) : Number.NaN;
+        if (!ticket?.url || !Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) {
+          throw new Error('사용 가능한 원본 다운로드 티켓을 받지 못했습니다.');
+        }
+
+        const ticketPreview: OriginalPreview = {
+          assetId: asset.id,
+          cacheKey,
+          source: { uri: ticket.url, cacheKey },
+          expiresAt: ticket.expiresAt,
+        };
+        originalPreviewCacheRef.current.set(asset.id, ticketPreview);
+        setOriginalPreview(ticketPreview);
+      } catch (error) {
+        if (!isCancelled) {
+          console.warn('[asset-detail] 원본 미리보기를 불러오지 못했습니다.', error);
+          setOriginalPreview(null);
+        }
+      }
+    };
+
+    void loadOriginalPreview();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [
+    currentAsset?.id,
+    currentAsset?.kind,
+    currentAsset?.remote_file_id,
+    currentAsset?.status,
+    originalReloadNonce,
+  ]);
+
+  // 5분 티켓이 만료될 때 캐시 파일이 있으면 로컬 경로로 고정한다.
+  // 캐시가 없으면 현재 표시를 유지하고, 이후 재요청 실패 시 새 티켓으로 한 번 재시도한다.
+  useEffect(() => {
+    if (!originalPreview?.expiresAt) return;
+
+    const expiresAtMs = Date.parse(originalPreview.expiresAt);
+    if (!Number.isFinite(expiresAtMs)) return;
+
+    let isCancelled = false;
+    const timer = setTimeout(() => {
+      void Image.getCachePathAsync(originalPreview.cacheKey)
+        .then((cachedPath) => {
+          if (isCancelled || !cachedPath) return;
+
+          setOriginalPreview((current) => {
+            if (current?.assetId !== originalPreview.assetId) return current;
+
+            const cachedPreview: OriginalPreview = {
+              ...current,
+              source: { uri: toFileUri(cachedPath), cacheKey: current.cacheKey },
+              expiresAt: null,
+            };
+            originalPreviewCacheRef.current.set(current.assetId, cachedPreview);
+            return cachedPreview;
+          });
+        })
+        .catch((error) => {
+          console.warn('[asset-detail] 만료된 티켓의 캐시 경로를 확인하지 못했습니다.', error);
+        });
+    }, Math.max(0, expiresAtMs - Date.now()));
+
+    return () => {
+      isCancelled = true;
+      clearTimeout(timer);
+    };
+  }, [originalPreview?.assetId, originalPreview?.cacheKey, originalPreview?.expiresAt]);
+
+  const handleOriginalPreviewError = (failedAssetId: string, message: string) => {
+    if (currentAsset?.id !== failedAssetId) return;
+
+    console.warn(`[asset-detail] 원본 이미지 표시 실패 (${failedAssetId}): ${message}`);
+    originalPreviewCacheRef.current.delete(failedAssetId);
+    setOriginalPreview(null);
+
+    const attempt = originalAttemptRef.current;
+    if (attempt.assetId === failedAssetId && attempt.retryCount === 0) {
+      attempt.retryCount = 1;
+      setOriginalReloadNonce((nonce) => nonce + 1);
+    }
+  };
+
+  const handleOriginalPreviewLoad = (loadedAssetId: string) => {
+    if (originalAttemptRef.current.assetId === loadedAssetId) {
+      originalAttemptRef.current.retryCount = 0;
+    }
+  };
+
   // 5. 스와이프 시 현재 감지된 아이템 변경 처리
   const onViewableItemsChanged = useRef(
     ({ viewableItems }: { viewableItems: ViewToken[] }) => {
@@ -523,6 +693,8 @@ export default function AssetDetailScreen() {
         removeClippedSubviews={Platform.OS === 'android'}
         renderItem={({ item }) => {
           const thumbUrl = thumbnailUrls[item.id];
+          const originalSource =
+            originalPreview?.assetId === item.id ? originalPreview.source : null;
           return (
             <View style={[styles.imageBox, { width: screenWidth }]}>
               {thumbUrl ? (
@@ -532,11 +704,28 @@ export default function AssetDetailScreen() {
                   contentFit="contain"
                   cachePolicy="memory-disk"
                   transition={150}
+                  recyclingKey={`thumbnail:${item.id}`}
                   accessibilityLabel={item.original_name}
                 />
               ) : (
                 <Text style={styles.imageIcon}>📷</Text>
               )}
+              {originalSource ? (
+                <Image
+                  source={originalSource}
+                  placeholder={thumbUrl ? { uri: thumbUrl } : undefined}
+                  placeholderContentFit="contain"
+                  style={styles.previewImage}
+                  contentFit="contain"
+                  cachePolicy="memory-disk"
+                  priority="high"
+                  transition={200}
+                  recyclingKey={`original:${item.id}`}
+                  onLoad={() => handleOriginalPreviewLoad(item.id)}
+                  onError={({ error }) => handleOriginalPreviewError(item.id, error)}
+                  accessibilityLabel={`${item.original_name} 원본`}
+                />
+              ) : null}
               <View style={styles.imageMetadata}>
                 <Text style={styles.imageText}>
                   원본 해상도: {item.width || '?'} x {item.height || '?'}
