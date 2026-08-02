@@ -14,6 +14,7 @@ import {
   ViewToken,
 } from 'react-native';
 
+import { FolderPickerModal } from '@/components/FolderPickerModal';
 import type { Asset } from '@/lib/database.types';
 import { supabase } from '@/lib/supabase';
 import { colors, radius, spacing, typography } from '@/lib/theme';
@@ -37,6 +38,8 @@ export default function AssetDetailScreen() {
   const [thumbnailUrls, setThumbnailUrls] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [showFolderPicker, setShowFolderPicker] = useState(false);
+  const [isMoving, setIsMoving] = useState(false);
 
   const flatListRef = useRef<FlatList<Asset>>(null);
 
@@ -216,6 +219,60 @@ export default function AssetDetailScreen() {
     }
   };
 
+  const handleMove = async (targetFolderId: string | null, targetFolderName: string) => {
+    if (!currentAsset || !spaceId || isMoving) return;
+
+    if (targetFolderId === currentAsset.folder_id) {
+      setShowFolderPicker(false);
+      Alert.alert('알림', '이미 선택한 폴더에 있는 사진입니다.');
+      return;
+    }
+
+    setIsMoving(true);
+    try {
+      const targetId = currentAsset.id;
+      const { data, error } = await (supabase.from('assets') as any)
+        .update({ folder_id: targetFolderId })
+        .eq('space_id', spaceId)
+        .eq('id', targetId)
+        .select('id');
+
+      if (error) throw error;
+
+      setShowFolderPicker(false);
+
+      // RLS UPDATE는 권한이 없으면 오류 없이 0행을 돌려준다. 반영 건수로 판정해야 한다.
+      if (((data || []) as Array<{ id: string }>).length === 0) {
+        Alert.alert(
+          '이동할 수 없음',
+          '이 사진을 옮기지 못했습니다. 멤버는 자신이 올린 사진만 옮길 수 있어요.',
+        );
+        return;
+      }
+
+      // 옮긴 사진은 이 폴더 목록에서 빠지므로 삭제와 같은 방식으로 이웃 사진을 이어 보여준다.
+      const nextList = assetsList.filter((a) => a.id !== targetId);
+      if (nextList.length === 0) {
+        Alert.alert(
+          '이동 완료',
+          `사진을 '${targetFolderName}'으로 옮겼어요.\n이 폴더에 남은 사진이 없어 이전 화면으로 돌아갑니다.`,
+          [{ text: '확인', onPress: () => router.back() }],
+        );
+        return;
+      }
+
+      const nextIndex = Math.min(currentIndex, nextList.length - 1);
+      setAssetsList(nextList);
+      setCurrentIndex(nextIndex);
+      router.setParams({ assetId: nextList[nextIndex].id });
+      Alert.alert('이동 완료', `사진을 '${targetFolderName}'으로 옮겼어요.`);
+    } catch (e: any) {
+      Alert.alert('이동 실패', e?.message || '사진을 옮기지 못했습니다.');
+    } finally {
+      setIsMoving(false);
+    }
+  };
+
   const handleDelete = async () => {
     if (!currentAsset || !spaceId) return;
 
@@ -350,16 +407,28 @@ export default function AssetDetailScreen() {
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={styles.toolBtn}
-          onPress={() => Alert.alert('폴더 이동', '이동할 폴더를 선택하세요.')}
+          style={[styles.toolBtn, isMoving && styles.disabledBtn]}
+          onPress={() => setShowFolderPicker(true)}
+          disabled={isMoving}
         >
-          <Text style={styles.toolBtnText}>📁 이동</Text>
+          <Text style={styles.toolBtnText}>{isMoving ? '이동 중...' : '📁 이동'}</Text>
         </TouchableOpacity>
 
         <TouchableOpacity style={[styles.toolBtn, styles.dangerBtn]} onPress={handleDelete}>
           <Text style={styles.dangerBtnText}>🗑️ 삭제</Text>
         </TouchableOpacity>
       </View>
+
+      <FolderPickerModal
+        visible={showFolderPicker}
+        spaceId={spaceId}
+        currentFolderId={currentAsset.folder_id}
+        busy={isMoving}
+        onClose={() => setShowFolderPicker(false)}
+        onSelect={(targetFolderId, targetFolderName) => {
+          void handleMove(targetFolderId, targetFolderName);
+        }}
+      />
     </View>
   );
 }
