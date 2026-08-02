@@ -1,5 +1,4 @@
 import { Image } from 'expo-image';
-import * as MediaLibrary from 'expo-media-library';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
@@ -14,7 +13,11 @@ import {
 import type { Asset } from '@/lib/database.types';
 import { supabase } from '@/lib/supabase';
 import { colors, radius, spacing, typography } from '@/lib/theme';
-import { deleteAssets, getDownloadTickets } from '@/storage/client';
+import { deleteAssets } from '@/storage/client';
+import {
+  CameraRollDownloadError,
+  downloadSingleAssetToCameraRoll,
+} from '@/storage/downloadToCameraRoll';
 import {
   createThumbnailSignedUrls,
   THUMBNAIL_URL_REFRESH_MS,
@@ -83,29 +86,24 @@ export default function AssetDetailScreen() {
     setIsDownloading(true);
 
     try {
-      // 1. Request permissions
-      const perm = await MediaLibrary.requestPermissionsAsync();
-      if (!perm.granted) {
-        Alert.alert('권한 필요', '카메라롤에 저장하기 위해 미디어 라이브러리 접근 권한이 필요합니다.');
-        return;
-      }
-
-      // 2. Get download ticket
-      const { tickets } = await getDownloadTickets([assetId]);
-      if (!tickets || tickets.length === 0) {
-        throw new Error('다운로드 티켓을 발급받지 못했습니다.');
-      }
-
-      const ticketUrl = tickets[0].url;
-
-      // 3. Save to media library
-      const localFileRes = await fetch(ticketUrl);
-      const blob = await localFileRes.blob();
-      
-      // Save asset
+      await downloadSingleAssetToCameraRoll(assetId, asset.original_name);
       Alert.alert('다운로드 완료', '카메라롤에 사진을 저장했습니다.');
     } catch (e: any) {
-      Alert.alert('다운로드 실패', e.message || '사진을 다운로드하지 못했습니다.');
+      if (e instanceof CameraRollDownloadError) {
+        let title = '다운로드 실패';
+        if (e.code === 'PERMISSION_DENIED') {
+          title = '권한 거부';
+        } else if (e.code === 'TICKET_FAILED') {
+          title = '티켓 발급 실패';
+        } else if (e.code === 'DOWNLOAD_FAILED') {
+          title = '다운로드 실패';
+        } else if (e.code === 'SAVE_FAILED') {
+          title = '저장 실패';
+        }
+        Alert.alert(title, e.message);
+      } else {
+        Alert.alert('다운로드 실패', e?.message || '사진을 다운로드하지 못했습니다.');
+      }
     } finally {
       setIsDownloading(false);
     }
