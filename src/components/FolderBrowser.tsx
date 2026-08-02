@@ -22,6 +22,7 @@ import { colors, radius, spacing, typography } from '@/lib/theme';
 import { queueManager } from '@/queue';
 import { useSpaceRealtime } from '@/realtime/useSpaceRealtime';
 import { deleteAssets } from '@/storage/client';
+import { downloadAssetsToCameraRoll } from '@/storage/downloadToCameraRoll';
 import {
   createThumbnailSignedUrls,
   THUMBNAIL_URL_REFRESH_MS,
@@ -55,6 +56,7 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
   // Multi-select state
   const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(new Set());
   const [isDeletingAssets, setIsDeletingAssets] = useState(false);
+  const [isDownloadingAssets, setIsDownloadingAssets] = useState(false);
   const isMultiSelect = selectedAssetIds.size > 0;
   const realtimeRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -274,6 +276,33 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
     setSelectedAssetIds(next);
   };
 
+  const handleDownloadSelected = async () => {
+    const assetIds = Array.from(selectedAssetIds);
+    if (assetIds.length === 0 || isDownloadingAssets) return;
+
+    setIsDownloadingAssets(true);
+    try {
+      const selected = assets.filter((asset) => selectedAssetIds.has(asset.id));
+      const { succeeded, failed } = await downloadAssetsToCameraRoll(
+        selected.map((asset) => ({ assetId: asset.id, fileName: asset.original_name })),
+      );
+
+      if (failed.length === 0) {
+        setSelectedAssetIds(new Set());
+        Alert.alert('다운로드 완료', `${succeeded.length}장을 카메라롤에 저장했어요.`);
+      } else {
+        Alert.alert(
+          '일부 저장 실패',
+          `${succeeded.length}장 저장, ${failed.length}장 실패\n${failed[0].error.message}`,
+        );
+      }
+    } catch (error: any) {
+      Alert.alert('다운로드 실패', error?.message || '사진을 저장하지 못했습니다.');
+    } finally {
+      setIsDownloadingAssets(false);
+    }
+  };
+
   const handleDeleteSelected = () => {
     const assetIds = Array.from(selectedAssetIds);
     if (assetIds.length === 0 || isDeletingAssets) return;
@@ -474,8 +503,14 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
         <View style={styles.multiActionBar}>
           <Text style={styles.multiCount}>{selectedAssetIds.size}개 선택됨</Text>
           <View style={styles.multiBtns}>
-            <TouchableOpacity style={styles.multiBtn}>
-              <Text style={styles.multiBtnText}>다운로드</Text>
+            <TouchableOpacity
+              style={[styles.multiBtn, isDownloadingAssets && styles.disabledBtn]}
+              onPress={handleDownloadSelected}
+              disabled={isDownloadingAssets}
+            >
+              <Text style={styles.multiBtnText}>
+                {isDownloadingAssets ? '저장 중...' : '다운로드'}
+              </Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[
