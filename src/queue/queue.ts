@@ -8,6 +8,7 @@ import {
   originalErrorDetails,
   userMessage,
 } from '@/storage/errors';
+import { readThumbnailUploadBody } from '@/storage/thumbnails';
 import { uploadResumable } from '@/storage/uploadResumable';
 
 import {
@@ -179,23 +180,42 @@ class QueueManager {
 
       // 3. 썸네일 업로드 시도 (이미지인 경우)
       let thumbUploaded = false;
+      let thumbnailError: ReturnType<typeof originalErrorDetails> | null = null;
       if (item.mime_type.startsWith('image')) {
         try {
-          const thumbBlob = await (await fetch(item.file_uri)).blob();
+          const thumbBody = await readThumbnailUploadBody(item.file_uri);
           const thumbPath = `${item.space_id}/${assetId}.jpg`;
           const { error: thumbErr } = await supabase.storage
             .from('thumbs')
-            .upload(thumbPath, thumbBlob, { contentType: 'image/jpeg', upsert: true });
+            .upload(thumbPath, thumbBody, { contentType: 'image/jpeg', upsert: true });
 
-          if (!thumbErr) thumbUploaded = true;
-        } catch {
-          /* 썸네일 실패는 원본 업로드를 막지 않음 */
+          if (thumbErr) throw thumbErr;
+          thumbUploaded = true;
+        } catch (error) {
+          // 썸네일 실패는 원본 업로드를 막지 않지만 진단 정보는 큐와 개발 로그에 남긴다.
+          thumbnailError = originalErrorDetails(error);
+          console.error('[upload-queue] Thumbnail upload failed', {
+            queueItemId: item.id,
+            assetId,
+            code: thumbnailError.code,
+            message: thumbnailError.message,
+            status: thumbnailError.status,
+            error,
+          });
         }
       }
 
       // 4. 업로드 완료 보고
       await completeUpload(assetId, uploadRes.remoteFileId, thumbUploaded);
-      await updateItemStatus(item.id, 'done', { bytes_sent: item.byte_size });
+      await updateItemStatus(item.id, 'done', {
+        bytes_sent: item.byte_size,
+        last_error: thumbnailError
+          ? '원본은 올라갔지만 미리보기를 만들지 못했어요.'
+          : null,
+        last_error_code: thumbnailError?.code ?? null,
+        last_error_detail: thumbnailError?.message ?? null,
+        last_error_status: thumbnailError?.status ?? null,
+      });
       await this.notifyListeners(item.space_id);
     } catch (err: any) {
       const isNeedReconnect = needsReconnect(err);

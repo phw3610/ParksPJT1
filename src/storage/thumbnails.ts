@@ -1,3 +1,5 @@
+import { EncodingType, readAsStringAsync } from 'expo-file-system/legacy';
+
 import type { Asset } from '@/lib/database.types';
 import { supabase } from '@/lib/supabase';
 
@@ -5,6 +7,22 @@ export const THUMBNAIL_URL_TTL_SECONDS = 60 * 60;
 export const THUMBNAIL_URL_REFRESH_MS = 55 * 60 * 1000;
 
 type ThumbnailAsset = Pick<Asset, 'id' | 'thumb_path'>;
+
+/**
+ * React Native의 Blob 대신 Supabase Storage가 지원하는 ArrayBuffer를 만든다.
+ * 현재 Phase 1에서는 별도 리사이즈 없이 원본 파일 바이트를 썸네일로 사용한다.
+ */
+export async function readThumbnailUploadBody(fileUri: string): Promise<ArrayBuffer> {
+  const base64 = await readAsStringAsync(fileUri, { encoding: EncodingType.Base64 });
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+
+  return bytes.buffer;
+}
 
 /** private thumbs 버킷의 URL을 한 번의 요청으로 발급한다. */
 export async function createThumbnailSignedUrls(

@@ -411,6 +411,14 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
           renderItem={({ item }) => {
             const isSelected = selectedAssetIds.has(item.id);
             const thumbnailUrl = thumbnailUrls[item.id];
+            const thumbnailPlaceholder =
+              item.status === 'pending' || item.status === 'uploading'
+                ? '처리 중'
+                : item.status === 'failed'
+                  ? '업로드 실패'
+                  : item.thumb_path
+                    ? '미리보기 불러오는 중'
+                    : '미리보기 없음';
             return (
               <TouchableOpacity
                 style={[styles.assetCell, isSelected && styles.assetSelected]}
@@ -443,7 +451,10 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
                       }}
                     />
                   ) : (
-                    <Text style={styles.photoIcon}>📷</Text>
+                    <View style={styles.photoPlaceholderContent}>
+                      <Text style={styles.photoIcon}>📷</Text>
+                      <Text style={styles.photoPlaceholderText}>{thumbnailPlaceholder}</Text>
+                    </View>
                   )}
                   <View style={styles.photoNameBackdrop}>
                     <Text style={styles.photoName} numberOfLines={1}>
@@ -669,6 +680,15 @@ const styles = StyleSheet.create({
   },
   photoIcon: {
     fontSize: 24,
+  },
+  photoPlaceholderContent: {
+    alignItems: 'center',
+    gap: 4,
+  },
+  photoPlaceholderText: {
+    color: colors.textMuted,
+    fontSize: 10,
+    fontWeight: '600',
   },
   photoNameBackdrop: {
     position: 'absolute',
