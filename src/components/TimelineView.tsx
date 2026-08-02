@@ -284,7 +284,10 @@ export function TimelineView({ spaceId }: TimelineViewProps) {
                 style={[styles.photoThumb, { width: itemSize, height: itemSize }]}
                 activeOpacity={0.8}
                 onPress={() =>
-                  router.push(`/(app)/spaces/${spaceId}/asset/${asset.id}`)
+                  router.push({
+                    pathname: '/(app)/spaces/[spaceId]/asset/[assetId]',
+                    params: { spaceId, assetId: asset.id, source: 'timeline' },
+                  })
                 }
               >
                 {thumbUrl ? (
