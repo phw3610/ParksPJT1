@@ -1,6 +1,6 @@
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   RefreshControl,
@@ -29,6 +29,13 @@ interface TimelineSection {
   data: Asset[][];
 }
 
+/**
+ * 3열 그리드 기준: 1개 뷰포트에 약 4줄(12장)이 들어감.
+ * 3개 뷰포트 분량인 36장을 1페이지 단위로 지정하여,
+ * 그리드 줄이 3열 단위로 끊어지지 않고 네트워크 요청 횟수를 줄임.
+ */
+const PAGE_SIZE = 36;
+
 function formatDateGroupTitle(dateString: string): string {
   const d = new Date(dateString);
   if (isNaN(d.getTime())) return '날짜 알 수 없음';
@@ -40,6 +47,10 @@ function formatDateGroupTitle(dateString: string): string {
   return `${year}년 ${month}월 ${day}일 (${dayOfWeek})`;
 }
 
+/**
+ * 정렬된 전체 assets 배열을 날짜별(captured_at ?? created_at)로 그룹핑.
+ * 페이지네이션으로 추가된 사진도 동일 날짜 그룹에 병합되므로 같은 날짜 헤더가 중복 생성되지 않음.
+ */
 function groupAssetsByDate(assets: Asset[]): TimelineSection[] {
   const groups = new Map<string, { title: string; assets: Asset[] }>();
 
@@ -84,6 +95,11 @@ export function TimelineView({ spaceId }: TimelineViewProps) {
   const [thumbnailUrls, setThumbnailUrls] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isFetchingMore, setIsFetchingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+
+  const assetsRef = useRef<Asset[]>([]);
+  assetsRef.current = assets;
 
   // 3열 그리드 항목 크기 계산
   const numColumns = 3;
@@ -91,26 +107,38 @@ export function TimelineView({ spaceId }: TimelineViewProps) {
   const padding = spacing.md;
   const itemSize = Math.floor((width - padding * 2 - gap * (numColumns - 1)) / numColumns);
 
-  const fetchTimelineAssets = useCallback(async () => {
+  // 1. 초기 1페이지(0 ~ PAGE_SIZE - 1) 조회
+  const fetchInitialTimelineAssets = useCallback(async () => {
     if (!spaceId) return;
     try {
-      // 정렬 계약: captured_at DESC nullsLast, created_at DESC (폴더 무관 전체 스페이스)
       const { data, error } = await supabase
         .from('assets')
         .select('*')
         .eq('space_id', spaceId)
         .is('deleted_at', null)
         .order('captured_at', { ascending: false, nullsFirst: false })
-        .order('created_at', { ascending: false });
+        .order('created_at', { ascending: false })
+        .range(0, PAGE_SIZE - 1);
 
       if (error) throw error;
 
       const loadedAssets = (data as Asset[] | null) || [];
       setAssets(loadedAssets);
       setSections(groupAssetsByDate(loadedAssets));
+      setHasMore(loadedAssets.length >= PAGE_SIZE);
+
+      // 서명 URL은 불러온 범위에 대해서만 개별 발급
+      if (loadedAssets.length > 0) {
+        const urls = await createThumbnailSignedUrls(loadedAssets);
+        setThumbnailUrls(urls);
+      } else {
+        setThumbnailUrls({});
+      }
     } catch {
       setAssets([]);
       setSections([]);
+      setThumbnailUrls({});
+      setHasMore(false);
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -118,31 +146,71 @@ export function TimelineView({ spaceId }: TimelineViewProps) {
   }, [spaceId]);
 
   useEffect(() => {
-    void fetchTimelineAssets();
-  }, [fetchTimelineAssets]);
+    void fetchInitialTimelineAssets();
+  }, [fetchInitialTimelineAssets]);
 
-  // 썸네일 서명 URL 배열 일괄 발급 및 주기적 갱신
-  useEffect(() => {
-    if (assets.length === 0) {
-      setThumbnailUrls({});
-      return;
+  // 2. 추가 페이지 무한 스크롤 조회 (onEndReached)
+  const fetchMoreTimelineAssets = async () => {
+    if (isFetchingMore || !hasMore || isLoading || isRefreshing || !spaceId) return;
+
+    setIsFetchingMore(true);
+    try {
+      const currentLoaded = assetsRef.current;
+      const from = currentLoaded.length;
+      const to = from + PAGE_SIZE - 1;
+
+      const { data, error } = await supabase
+        .from('assets')
+        .select('*')
+        .eq('space_id', spaceId)
+        .is('deleted_at', null)
+        .order('captured_at', { ascending: false, nullsFirst: false })
+        .order('created_at', { ascending: false })
+        .range(from, to);
+
+      if (error) throw error;
+
+      const newFetched = (data as Asset[] | null) || [];
+      if (newFetched.length < PAGE_SIZE) {
+        setHasMore(false);
+      }
+
+      // 기존 불러온 항목과 중복되는 ID 필터링 (스크롤 시 신규 사진 추가 등으로 인한 오프셋 밀림 방지)
+      const existingIds = new Set(currentLoaded.map((a) => a.id));
+      const uniqueNewAssets = newFetched.filter((a) => !existingIds.has(a.id));
+
+      if (uniqueNewAssets.length > 0) {
+        const combined = [...currentLoaded, ...uniqueNewAssets];
+        setAssets(combined);
+        setSections(groupAssetsByDate(combined));
+
+        // 새로 추가된 사진 몫에 대해서만 서명 URL 추가 발급 (기존 발급 URL 유지)
+        const newUrls = await createThumbnailSignedUrls(uniqueNewAssets);
+        setThumbnailUrls((prev) => ({ ...prev, ...newUrls }));
+      }
+    } catch {
+      /* 에러 시 다음 스크롤에서 재시도할 수 있도록 상태 해제 */
+    } finally {
+      setIsFetchingMore(false);
     }
+  };
+
+  // 3. 로드된 전체 assets 썸네일 서명 URL 주기적 갱신 (만료 방지)
+  useEffect(() => {
+    if (assets.length === 0) return;
 
     let isCancelled = false;
     const refreshThumbnailUrls = async () => {
       try {
-        const urls = await createThumbnailSignedUrls(assets);
+        const urls = await createThumbnailSignedUrls(assetsRef.current);
         if (!isCancelled) {
           setThumbnailUrls(urls);
         }
       } catch {
-        if (!isCancelled) {
-          setThumbnailUrls({});
-        }
+        /* 무시 */
       }
     };
 
-    void refreshThumbnailUrls();
     const refreshTimer = setInterval(() => {
       void refreshThumbnailUrls();
     }, THUMBNAIL_URL_REFRESH_MS);
@@ -151,11 +219,12 @@ export function TimelineView({ spaceId }: TimelineViewProps) {
       isCancelled = true;
       clearInterval(refreshTimer);
     };
-  }, [assets]);
+  }, [assets.length]);
 
   const handleRefresh = () => {
     setIsRefreshing(true);
-    void fetchTimelineAssets();
+    setHasMore(true);
+    void fetchInitialTimelineAssets();
   };
 
   if (isLoading) {
@@ -184,12 +253,21 @@ export function TimelineView({ spaceId }: TimelineViewProps) {
       keyExtractor={(row, index) => (row[0] ? row[0].id : `row-${index}`)}
       stickySectionHeadersEnabled
       contentContainerStyle={styles.listContent}
+      onEndReached={fetchMoreTimelineAssets}
+      onEndReachedThreshold={0.5}
       refreshControl={
         <RefreshControl
           refreshing={isRefreshing}
           onRefresh={handleRefresh}
           tintColor={colors.primary}
         />
+      }
+      ListFooterComponent={
+        isFetchingMore ? (
+          <View style={styles.footerLoader}>
+            <ActivityIndicator size="small" color={colors.primary} />
+          </View>
+        ) : null
       }
       renderSectionHeader={({ section: { title } }) => (
         <View style={styles.sectionHeader}>
@@ -284,5 +362,9 @@ const styles = StyleSheet.create({
   },
   thumbIcon: {
     fontSize: 24,
+  },
+  footerLoader: {
+    paddingVertical: spacing.md,
+    alignItems: 'center',
   },
 });
