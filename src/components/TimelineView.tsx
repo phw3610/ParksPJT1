@@ -12,6 +12,7 @@ import {
   View,
 } from 'react-native';
 
+import { VideoBadge } from '@/components/VideoBadge';
 import type { Asset } from '@/lib/database.types';
 import { supabase } from '@/lib/supabase';
 import { colors, radius, spacing, typography } from '@/lib/theme';
@@ -301,9 +302,10 @@ export function TimelineView({ spaceId }: TimelineViewProps) {
                   />
                 ) : (
                   <View style={styles.thumbPlaceholder}>
-                    <Text style={styles.thumbIcon}>📷</Text>
+                    <Text style={styles.thumbIcon}>{asset.kind === 'video' ? '🎬' : '📷'}</Text>
                   </View>
                 )}
+                {asset.kind === 'video' && <VideoBadge durationMs={asset.duration_ms} />}
               </TouchableOpacity>
             );
           })}

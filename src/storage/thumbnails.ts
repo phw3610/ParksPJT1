@@ -1,5 +1,6 @@
 import { File } from 'expo-file-system';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
+import * as VideoThumbnails from 'expo-video-thumbnails';
 
 import type { Asset } from '@/lib/database.types';
 import { supabase } from '@/lib/supabase';
@@ -10,6 +11,8 @@ export const THUMBNAIL_URL_REFRESH_MS = 55 * 60 * 1000;
 export const THUMBNAIL_MAX_LONG_EDGE_PX = 400;
 // 작은 그리드 셀에서 품질을 유지하면서 일반 사진을 대략 수십 KB로 줄이는 균형값이다.
 export const THUMBNAIL_JPEG_QUALITY = 0.75;
+// 첫 프레임은 검은 화면인 경우가 많아 1초 지점을 쓴다.
+const VIDEO_THUMBNAIL_TIME_MS = 1000;
 
 type ThumbnailAsset = Pick<Asset, 'id' | 'thumb_path'>;
 
@@ -45,6 +48,31 @@ export async function readThumbnailUploadBody(fileUri: string): Promise<ArrayBuf
   } finally {
     if (temporaryFile?.exists) {
       temporaryFile.delete();
+    }
+  }
+}
+
+/**
+ * 영상은 한 프레임을 뽑아 사진과 같은 규격의 JPEG 썸네일로 만든다.
+ * 그래야 그리드에서 사진과 영상이 같은 방식으로 표시된다.
+ */
+export async function readVideoThumbnailUploadBody(fileUri: string): Promise<ArrayBuffer> {
+  let frameUri: string;
+  try {
+    ({ uri: frameUri } = await VideoThumbnails.getThumbnailAsync(fileUri, {
+      time: VIDEO_THUMBNAIL_TIME_MS,
+    }));
+  } catch {
+    // 1초보다 짧은 영상은 그 지점이 없어 실패하므로 첫 프레임으로 되돌린다.
+    ({ uri: frameUri } = await VideoThumbnails.getThumbnailAsync(fileUri, { time: 0 }));
+  }
+
+  try {
+    return await readThumbnailUploadBody(frameUri);
+  } finally {
+    const frameFile = new File(frameUri);
+    if (frameFile.exists) {
+      frameFile.delete();
     }
   }
 }

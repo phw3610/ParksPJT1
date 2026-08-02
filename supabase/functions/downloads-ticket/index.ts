@@ -10,6 +10,9 @@ import {
 } from "../_shared/common.ts";
 import { signDownloadTicket } from "../_shared/jwt.ts";
 
+const IMAGE_TICKET_TTL_SECONDS = 300;
+const VIDEO_TICKET_TTL_SECONDS = 4 * 60 * 60;
+
 Deno.serve(
   withErrorHandling(async (req) => {
     if (req.method !== "POST") {
@@ -20,7 +23,7 @@ Deno.serve(
     const assetIds = requireStringArray(body.assetIds, "assetIds", 100);
     const { data: assets, error } = await admin
       .from("assets")
-      .select("id,space_id,status,remote_file_id,deleted_at")
+      .select("id,space_id,kind,status,remote_file_id,deleted_at")
       .in("id", assetIds);
     if (error) {
       throw new HttpError(
@@ -61,9 +64,10 @@ Deno.serve(
           "이 에셋을 다운로드할 권한이 없습니다.",
         );
       }
+      // 영상은 재생 내내 같은 티켓으로 Range 요청을 이어가므로 5분으로는 도중에 끊긴다.
       const signed = await signDownloadTicket(
         { assetId: asset.id, userId: user.id, spaceId: asset.space_id },
-        300,
+        asset.kind === "video" ? VIDEO_TICKET_TTL_SECONDS : IMAGE_TICKET_TTL_SECONDS,
       );
       tickets.push({
         assetId: asset.id,

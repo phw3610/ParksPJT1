@@ -15,6 +15,8 @@ import {
 } from 'react-native';
 
 import { FolderPickerModal } from '@/components/FolderPickerModal';
+import { VideoPlayerPane } from '@/components/VideoPlayerPane';
+import { ZoomablePhoto } from '@/components/ZoomablePhoto';
 import type { Asset } from '@/lib/database.types';
 import { supabase } from '@/lib/supabase';
 import { colors, radius, spacing, typography } from '@/lib/theme';
@@ -35,6 +37,12 @@ interface OriginalPreview {
   cacheKey: string;
   source: ImageSource;
   expiresAt: string | null;
+}
+
+interface VideoStream {
+  assetId: string;
+  url: string | null;
+  errorMessage: string | null;
 }
 
 function getOriginalCacheKey(asset: Asset): string {
@@ -60,6 +68,7 @@ export default function AssetDetailScreen() {
   const [currentIndex, setCurrentIndex] = useState<number>(0);
   const [thumbnailUrls, setThumbnailUrls] = useState<Record<string, string>>({});
   const [originalPreview, setOriginalPreview] = useState<OriginalPreview | null>(null);
+  const [videoStream, setVideoStream] = useState<VideoStream | null>(null);
   const [originalReloadNonce, setOriginalReloadNonce] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [isDownloading, setIsDownloading] = useState(false);
@@ -67,6 +76,8 @@ export default function AssetDetailScreen() {
   const [isMoving, setIsMoving] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [isFetchingMore, setIsFetchingMore] = useState(false);
+  /** 확대 중에는 좌우 스와이프를 잠가야 사진을 끌어서 볼 수 있다. */
+  const [isZoomed, setIsZoomed] = useState(false);
 
   const flatListRef = useRef<FlatList<Asset>>(null);
   const assetsListRef = useRef<Asset[]>([]);
@@ -340,6 +351,7 @@ export default function AssetDetailScreen() {
   }, [currentIndex, assetsList, assetId, router, source]);
 
   const currentAsset = assetsList[currentIndex] ?? null;
+  const mediaLabel = currentAsset?.kind === 'video' ? '영상' : '사진';
 
   // 현재 보고 있는 사진만 원본 티켓을 발급한다. 이전에 받은 원본은 안정적인 cacheKey로 재사용한다.
   useEffect(() => {
@@ -432,6 +444,57 @@ export default function AssetDetailScreen() {
     originalReloadNonce,
   ]);
 
+  // 영상은 재생 티켓 URL을 그대로 스트리밍한다. 캐시하지 않으므로 볼 때마다 새로 발급한다.
+  useEffect(() => {
+    const asset = currentAsset;
+    if (
+      !asset ||
+      asset.kind !== 'video' ||
+      asset.status !== 'ready' ||
+      !asset.remote_file_id
+    ) {
+      setVideoStream(null);
+      return;
+    }
+
+    let isCancelled = false;
+
+    const loadVideoTicket = async () => {
+      setVideoStream({ assetId: asset.id, url: null, errorMessage: null });
+
+      try {
+        const { tickets } = await getDownloadTickets([asset.id]);
+        if (isCancelled) return;
+
+        const ticket = tickets.find((candidate) => candidate.assetId === asset.id);
+        if (!ticket?.url) {
+          throw new Error('재생 티켓을 받지 못했습니다.');
+        }
+
+        setVideoStream({ assetId: asset.id, url: ticket.url, errorMessage: null });
+      } catch (error) {
+        if (isCancelled) return;
+        console.warn('[asset-detail] 영상 재생 티켓을 발급받지 못했습니다.', error);
+        setVideoStream({
+          assetId: asset.id,
+          url: null,
+          errorMessage: '영상을 재생할 수 없어요.\n잠시 후 다시 시도해 주세요.',
+        });
+      }
+    };
+
+    void loadVideoTicket();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [
+    currentAsset?.id,
+    currentAsset?.kind,
+    currentAsset?.remote_file_id,
+    currentAsset?.status,
+  ]);
+
   // 5분 티켓이 만료될 때 캐시 파일이 있으면 로컬 경로로 고정한다.
   // 캐시가 없으면 현재 표시를 유지하고, 이후 재요청 실패 시 새 티켓으로 한 번 재시도한다.
   useEffect(() => {
@@ -512,7 +575,7 @@ export default function AssetDetailScreen() {
 
     try {
       await downloadSingleAssetToCameraRoll(currentAsset.id, currentAsset.original_name);
-      Alert.alert('다운로드 완료', '카메라롤에 사진을 저장했습니다.');
+      Alert.alert('다운로드 완료', `카메라롤에 ${mediaLabel}을 저장했습니다.`);
     } catch (e: any) {
       if (e instanceof CameraRollDownloadError) {
         let title = '다운로드 실패';
@@ -570,14 +633,14 @@ export default function AssetDetailScreen() {
           a.id === targetId ? { ...a, folder_id: targetFolderId } : a
         );
         setAssetsList(updatedList);
-        Alert.alert('이동 완료', `사진을 '${targetFolderName}'으로 옮겼어요.`);
+        Alert.alert('이동 완료', `${mediaLabel}을 '${targetFolderName}'으로 옮겼어요.`);
       } else {
         // 폴더 범위: 옮긴 사진은 이 폴더 목록에서 빠지므로 삭제와 같은 방식으로 이웃 사진을 이어 보여준다.
         const nextList = assetsList.filter((a) => a.id !== targetId);
         if (nextList.length === 0) {
           Alert.alert(
             '이동 완료',
-            `사진을 '${targetFolderName}'으로 옮겼어요.\n이 폴더에 남은 사진이 없어 이전 화면으로 돌아갑니다.`,
+            `${mediaLabel}을 '${targetFolderName}'으로 옮겼어요.\n이 폴더에 남은 항목이 없어 이전 화면으로 돌아갑니다.`,
             [{ text: '확인', onPress: () => router.back() }],
           );
           return;
@@ -587,7 +650,7 @@ export default function AssetDetailScreen() {
         setAssetsList(nextList);
         setCurrentIndex(nextIndex);
         router.setParams({ assetId: nextList[nextIndex].id, ...(source ? { source } : {}) });
-        Alert.alert('이동 완료', `사진을 '${targetFolderName}'으로 옮겼어요.`);
+        Alert.alert('이동 완료', `${mediaLabel}을 '${targetFolderName}'으로 옮겼어요.`);
       }
     } catch (e: any) {
       Alert.alert('이동 실패', e?.message || '사진을 옮기지 못했습니다.');
@@ -600,8 +663,8 @@ export default function AssetDetailScreen() {
     if (!currentAsset || !spaceId) return;
 
     Alert.alert(
-      '사진 삭제',
-      '이 사진을 Google Drive 휴지통으로 옮길까요?\n앱 목록에서는 사라지며, 복구하려면 Google Drive에서 해야 합니다.',
+      `${mediaLabel} 삭제`,
+      `이 ${mediaLabel}을 Google Drive 휴지통으로 옮길까요?\n앱 목록에서는 사라지며, 복구하려면 Google Drive에서 해야 합니다.`,
       [
         { text: '취소', style: 'cancel' },
         {
@@ -616,7 +679,7 @@ export default function AssetDetailScreen() {
               if (nextList.length === 0) {
                 Alert.alert(
                   '삭제 완료',
-                  '사진을 Google Drive 휴지통으로 옮겼어요.\n모든 사진이 삭제되어 이전 화면으로 돌아갑니다.',
+                  `${mediaLabel}을 Google Drive 휴지통으로 옮겼어요.\n모든 항목이 삭제되어 이전 화면으로 돌아갑니다.`,
                   [{ text: '확인', onPress: () => router.back() }]
                 );
               } else {
@@ -626,7 +689,7 @@ export default function AssetDetailScreen() {
                 router.setParams({ assetId: nextList[nextIndex].id, ...(source ? { source } : {}) });
                 Alert.alert(
                   '삭제 완료',
-                  '사진을 Google Drive 휴지통으로 옮겼어요.'
+                  `${mediaLabel}을 Google Drive 휴지통으로 옮겼어요.`
                 );
               }
             } catch (e: any) {
@@ -675,6 +738,7 @@ export default function AssetDetailScreen() {
         data={assetsList}
         horizontal
         pagingEnabled
+        scrollEnabled={!isZoomed}
         showsHorizontalScrollIndicator={false}
         initialScrollIndex={currentIndex}
         getItemLayout={(_, index) => ({
@@ -693,39 +757,62 @@ export default function AssetDetailScreen() {
         removeClippedSubviews={Platform.OS === 'android'}
         renderItem={({ item }) => {
           const thumbUrl = thumbnailUrls[item.id];
+          const isActiveItem = item.id === currentAsset.id;
+
+          if (item.kind === 'video') {
+            const stream = videoStream?.assetId === item.id ? videoStream : null;
+            return (
+              <View style={[styles.imageBox, { width: screenWidth }]}>
+                <VideoPlayerPane
+                  style={StyleSheet.absoluteFill}
+                  sourceUri={stream?.url ?? null}
+                  posterUrl={thumbUrl}
+                  isActive={isActiveItem}
+                  errorMessage={stream?.errorMessage ?? null}
+                />
+              </View>
+            );
+          }
+
           const originalSource =
             originalPreview?.assetId === item.id ? originalPreview.source : null;
           return (
             <View style={[styles.imageBox, { width: screenWidth }]}>
-              {thumbUrl ? (
-                <Image
-                  source={thumbUrl}
-                  style={styles.previewImage}
-                  contentFit="contain"
-                  cachePolicy="memory-disk"
-                  transition={150}
-                  recyclingKey={`thumbnail:${item.id}`}
-                  accessibilityLabel={item.original_name}
-                />
-              ) : (
-                <Text style={styles.imageIcon}>📷</Text>
-              )}
-              {originalSource ? (
-                <Image
-                  source={originalSource}
-                  placeholder={thumbUrl ? { uri: thumbUrl } : undefined}
-                  placeholderContentFit="contain"
-                  style={styles.previewImage}
-                  contentFit="contain"
-                  cachePolicy="memory-disk"
-                  priority="high"
-                  transition={200}
-                  recyclingKey={`original:${item.id}`}
-                  onLoad={() => handleOriginalPreviewLoad(item.id)}
-                  onError={({ error }) => handleOriginalPreviewError(item.id, error)}
-                  accessibilityLabel={`${item.original_name} 원본`}
-                />
-              ) : null}
+              <ZoomablePhoto
+                style={StyleSheet.absoluteFill}
+                isActive={isActiveItem}
+                onZoomChange={setIsZoomed}
+              >
+                {thumbUrl ? (
+                  <Image
+                    source={thumbUrl}
+                    style={styles.previewImage}
+                    contentFit="contain"
+                    cachePolicy="memory-disk"
+                    transition={150}
+                    recyclingKey={`thumbnail:${item.id}`}
+                    accessibilityLabel={item.original_name}
+                  />
+                ) : (
+                  <Text style={styles.imageIcon}>📷</Text>
+                )}
+                {originalSource ? (
+                  <Image
+                    source={originalSource}
+                    placeholder={thumbUrl ? { uri: thumbUrl } : undefined}
+                    placeholderContentFit="contain"
+                    style={styles.previewImage}
+                    contentFit="contain"
+                    cachePolicy="memory-disk"
+                    priority="high"
+                    transition={200}
+                    recyclingKey={`original:${item.id}`}
+                    onLoad={() => handleOriginalPreviewLoad(item.id)}
+                    onError={({ error }) => handleOriginalPreviewError(item.id, error)}
+                    accessibilityLabel={`${item.original_name} 원본`}
+                  />
+                ) : null}
+              </ZoomablePhoto>
               <View style={styles.imageMetadata}>
                 <Text style={styles.imageText}>
                   원본 해상도: {item.width || '?'} x {item.height || '?'}

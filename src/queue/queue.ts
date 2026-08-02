@@ -8,7 +8,10 @@ import {
   originalErrorDetails,
   userMessage,
 } from '@/storage/errors';
-import { readThumbnailUploadBody } from '@/storage/thumbnails';
+import {
+  readThumbnailUploadBody,
+  readVideoThumbnailUploadBody,
+} from '@/storage/thumbnails';
 import { uploadResumable } from '@/storage/uploadResumable';
 
 import {
@@ -193,12 +196,15 @@ class QueueManager {
         },
       });
 
-      // 3. 썸네일 업로드 시도 (이미지인 경우)
+      // 3. 썸네일 업로드 시도 (사진은 원본을, 영상은 한 프레임을 축소한다)
       let thumbUploaded = false;
       let thumbnailError: ReturnType<typeof originalErrorDetails> | null = null;
-      if (item.mime_type.startsWith('image')) {
+      const isVideo = item.mime_type.startsWith('video');
+      if (isVideo || item.mime_type.startsWith('image')) {
         try {
-          const thumbBody = await readThumbnailUploadBody(item.file_uri);
+          const thumbBody = isVideo
+            ? await readVideoThumbnailUploadBody(item.file_uri)
+            : await readThumbnailUploadBody(item.file_uri);
           const thumbPath = `${item.space_id}/${assetId}.jpg`;
           const { error: thumbErr } = await supabase.storage
             .from('thumbs')

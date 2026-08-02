@@ -19,6 +19,7 @@ import {
 
 import { useAuth } from '@/auth';
 import { FolderPickerModal } from '@/components/FolderPickerModal';
+import { VideoBadge } from '@/components/VideoBadge';
 import type { Asset, Folder, StorageConnection } from '@/lib/database.types';
 import { supabase } from '@/lib/supabase';
 import { colors, radius, spacing, typography } from '@/lib/theme';
@@ -566,6 +567,7 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images', 'videos'],
       allowsMultipleSelection: true,
       quality: 1,
       exif: true,
@@ -1014,10 +1016,11 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
                     />
                   ) : (
                     <View style={styles.photoPlaceholderContent}>
-                      <Text style={styles.photoIcon}>📷</Text>
+                      <Text style={styles.photoIcon}>{item.kind === 'video' ? '🎬' : '📷'}</Text>
                       <Text style={styles.photoPlaceholderText}>{thumbnailPlaceholder}</Text>
                     </View>
                   )}
+                  {item.kind === 'video' && <VideoBadge durationMs={item.duration_ms} />}
                   <View style={styles.photoNameBackdrop}>
                     <Text style={styles.photoName} numberOfLines={1}>
                       {item.original_name}

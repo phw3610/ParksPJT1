@@ -13,7 +13,6 @@ import {
 import { useAuth } from '@/auth';
 import { FolderBrowser } from '@/components/FolderBrowser';
 import { TimelineView } from '@/components/TimelineView';
-import type { MemberRole } from '@/lib/database.types';
 import { supabase } from '@/lib/supabase';
 import { colors, radius, spacing, typography } from '@/lib/theme';
 
@@ -23,7 +22,6 @@ export default function SpaceHomeScreen() {
   const router = useRouter();
 
   const [spaceName, setSpaceName] = useState<string>('');
-  const [role, setRole] = useState<MemberRole | null>(null);
   const [isOwner, setIsOwner] = useState(false);
   const [canManage, setCanManage] = useState(false);
   const [viewMode, setViewMode] = useState<'folder' | 'timeline'>('folder');
@@ -59,7 +57,6 @@ export default function SpaceHomeScreen() {
         .maybeSingle();
 
       if (memberData) {
-        setRole(memberData.role);
         const managed = memberData.role === 'owner' || memberData.role === 'admin';
         setCanManage(managed);
         if (memberData.role === 'owner') {
@@ -132,38 +129,6 @@ export default function SpaceHomeScreen() {
     );
   };
 
-  const handleLeaveSpace = async () => {
-    if (!spaceId || !user) return;
-
-    Alert.alert(
-      '앨범 나가기',
-      `'${spaceName || '이 앨범'}'에서 나가시겠습니까?\n\n※ 앨범에서 나가더라도 본인이 올린 사진과 Google 드라이브의 원본 파일은 삭제되지 않고 안전하게 보관됩니다. 다시 참여하려면 가족에게 새로운 초대 코드를 받아야 합니다.`,
-      [
-        { text: '취소', style: 'cancel' },
-        {
-          text: '나가기',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              const { error } = await supabase
-                .from('space_members')
-                .delete()
-                .eq('space_id', spaceId)
-                .eq('user_id', user.id);
-
-              if (error) throw error;
-
-              Alert.alert('완료', '앨범에서 나갔습니다.');
-              router.replace('/(app)/spaces');
-            } catch (e: any) {
-              Alert.alert('나가기 실패', e.message || '앨범에서 나가지 못했습니다.');
-            }
-          },
-        },
-      ]
-    );
-  };
-
   return (
     <View style={styles.container}>
       <Stack.Screen
@@ -194,16 +159,12 @@ export default function SpaceHomeScreen() {
                 </TouchableOpacity>
               )}
 
-              {/* 소유자: 앨범 삭제 / 초대받은 멤버(비소유자): 앨범 나가기 */}
-              {isOwner ? (
+              {/* 소유자 전용: 앨범 삭제. 비소유자의 앨범 나가기는 멤버 화면에만 둔다. */}
+              {isOwner && (
                 <TouchableOpacity style={[styles.headerBtn, styles.dangerHeaderBtn]} onPress={handleDeleteSpace}>
                   <Text style={styles.dangerHeaderBtnText}>🗑️ 삭제</Text>
                 </TouchableOpacity>
-              ) : role ? (
-                <TouchableOpacity style={[styles.headerBtn, styles.dangerHeaderBtn]} onPress={handleLeaveSpace}>
-                  <Text style={styles.dangerHeaderBtnText}>🚪 나가기</Text>
-                </TouchableOpacity>
-              ) : null}
+              )}
             </View>
           ),
         }}
