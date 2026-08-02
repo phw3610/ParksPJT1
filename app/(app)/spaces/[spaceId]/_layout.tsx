@@ -41,6 +41,7 @@ export default function SpaceDetailLayout() {
       <Stack.Screen name="queue" options={{ title: '업로드 큐' }} />
       <Stack.Screen name="asset/[assetId]" options={{ title: '사진 상세' }} />
       <Stack.Screen name="members" options={{ title: '멤버 및 역할' }} />
+      <Stack.Screen name="trash" options={{ title: '휴지통' }} />
     </Stack>
   );
 }

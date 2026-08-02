@@ -84,6 +84,7 @@ class QueueManager {
     width?: number | null;
     height?: number | null;
     durationMs?: number | null;
+    quickHash?: string | null;
     kind: 'image' | 'video';
     source?: 'manual' | 'auto';
   }): Promise<UploadQueueItem> {
@@ -100,7 +101,7 @@ class QueueManager {
       width: input.width ?? null,
       height: input.height ?? null,
       duration_ms: input.durationMs ?? null,
-      quick_hash: null,
+      quick_hash: input.quickHash ?? null,
       source: input.source ?? 'manual',
     });
 
@@ -169,6 +170,7 @@ class QueueManager {
           width: item.width ?? undefined,
           height: item.height ?? undefined,
           durationMs: item.duration_ms ?? undefined,
+          contentHash: item.quick_hash ?? undefined,
           kind,
         });
 

@@ -69,6 +69,8 @@ export interface StorageProvider {
 
   getDownloadTicket(ref: RemoteRef, ttlSec: number): Promise<DownloadTicket>;
   delete(ref: RemoteRef, opts?: { permanent?: boolean }): Promise<void>;
+  /** 휴지통으로 보낸 파일을 되돌린다. permanent 삭제는 되돌릴 수 없다. */
+  restore(ref: RemoteRef): Promise<void>;
 
   quota(): Promise<{ limit: number | null; usage: number } | null>;
 }

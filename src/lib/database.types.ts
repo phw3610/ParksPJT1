@@ -129,6 +129,19 @@ interface ReactionRow {
   created_at: string;
 }
 
+interface FavoriteRow {
+  space_id: string;
+  asset_id: string;
+  user_id: string;
+  created_at: string;
+}
+
+interface SpaceReadStateRow {
+  space_id: string;
+  user_id: string;
+  last_read_at: string;
+}
+
 /** 내부 전용. RLS 정책과 클라이언트 권한이 없으므로 앱에서 사용하면 안 된다. */
 interface NotificationBatchRow {
   id: string;
@@ -344,6 +357,16 @@ export interface Database {
           emoji?: string;
           created_at?: string;
         }
+      >;
+      favorites: Table<
+        FavoriteRow,
+        { space_id: string; asset_id: string; user_id: string; created_at?: string },
+        { space_id?: string; asset_id?: string; user_id?: string; created_at?: string }
+      >;
+      space_read_state: Table<
+        SpaceReadStateRow,
+        { space_id: string; user_id: string; last_read_at?: string },
+        { space_id?: string; user_id?: string; last_read_at?: string }
       >;
       /** 내부 전용. 클라이언트 사용 금지. */
       notification_batches: Table<

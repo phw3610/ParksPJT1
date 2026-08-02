@@ -1,6 +1,6 @@
 import { Image, type ImageSource } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -14,6 +14,8 @@ import {
   ViewToken,
 } from 'react-native';
 
+import { useAuth } from '@/auth';
+import { AssetCommentsModal } from '@/components/AssetCommentsModal';
 import { FolderPickerModal } from '@/components/FolderPickerModal';
 import { VideoPlayerPane } from '@/components/VideoPlayerPane';
 import { ZoomablePhoto } from '@/components/ZoomablePhoto';
@@ -31,6 +33,8 @@ import {
 } from '@/storage/thumbnails';
 
 const PAGE_SIZE = 36;
+/** reactions는 (asset_id, user_id, emoji) PK라 여러 이모지를 담을 수 있지만 지금은 하나만 쓴다. */
+const REACTION_EMOJI = '❤️';
 
 interface OriginalPreview {
   assetId: string;
@@ -60,6 +64,8 @@ export default function AssetDetailScreen() {
     source?: string;
   }>();
   const router = useRouter();
+  const { user } = useAuth();
+  const userId = user?.id;
   const { width: screenWidth } = useWindowDimensions();
 
   const isTimelineScope = source === 'timeline';
@@ -78,6 +84,15 @@ export default function AssetDetailScreen() {
   const [isFetchingMore, setIsFetchingMore] = useState(false);
   /** 확대 중에는 좌우 스와이프를 잠가야 사진을 끌어서 볼 수 있다. */
   const [isZoomed, setIsZoomed] = useState(false);
+  const [reactions, setReactions] = useState<{ count: number; mine: boolean }>({
+    count: 0,
+    mine: false,
+  });
+  const [isTogglingReaction, setIsTogglingReaction] = useState(false);
+  const [isFavorite, setIsFavorite] = useState(false);
+  const [isTogglingFavorite, setIsTogglingFavorite] = useState(false);
+  const [commentCounts, setCommentCounts] = useState<Record<string, number>>({});
+  const [showComments, setShowComments] = useState(false);
 
   const flatListRef = useRef<FlatList<Asset>>(null);
   const assetsListRef = useRef<Asset[]>([]);
@@ -495,6 +510,55 @@ export default function AssetDetailScreen() {
     currentAsset?.status,
   ]);
 
+  // 반응·댓글 수는 보고 있는 항목이 바뀔 때마다 다시 읽는다.
+  useEffect(() => {
+    const asset = currentAsset;
+    if (!asset || !userId) {
+      setReactions({ count: 0, mine: false });
+      return;
+    }
+
+    let isCancelled = false;
+
+    const loadSocialCounts = async () => {
+      try {
+        const [reactionRes, commentRes, favoriteRes] = await Promise.all([
+          supabase.from('reactions').select('user_id').eq('asset_id', asset.id),
+          supabase
+            .from('comments')
+            .select('id', { count: 'exact', head: true })
+            .eq('asset_id', asset.id)
+            .is('deleted_at', null),
+          supabase
+            .from('favorites')
+            .select('asset_id')
+            .eq('asset_id', asset.id)
+            .eq('user_id', userId)
+            .maybeSingle(),
+        ]);
+        if (isCancelled) return;
+
+        const rows = (reactionRes.data as { user_id: string }[] | null) ?? [];
+        setReactions({
+          count: rows.length,
+          mine: rows.some((row) => row.user_id === userId),
+        });
+        setCommentCounts((current) => ({ ...current, [asset.id]: commentRes.count ?? 0 }));
+        setIsFavorite(Boolean(favoriteRes.data));
+      } catch (error) {
+        if (!isCancelled) {
+          console.warn('[asset-detail] 반응·댓글 수를 불러오지 못했습니다.', error);
+        }
+      }
+    };
+
+    void loadSocialCounts();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentAsset?.id, userId]);
+
   // 5분 티켓이 만료될 때 캐시 파일이 있으면 로컬 경로로 고정한다.
   // 캐시가 없으면 현재 표시를 유지하고, 이후 재요청 실패 시 새 티켓으로 한 번 재시도한다.
   useEffect(() => {
@@ -568,6 +632,87 @@ export default function AssetDetailScreen() {
   const viewabilityConfig = useRef({
     itemVisiblePercentThreshold: 50,
   }).current;
+
+  const handleCommentCountChange = useCallback((targetAssetId: string, count: number) => {
+    setCommentCounts((current) =>
+      current[targetAssetId] === count ? current : { ...current, [targetAssetId]: count },
+    );
+  }, []);
+
+  const handleToggleReaction = async () => {
+    if (!currentAsset || !spaceId || !userId || isTogglingReaction) return;
+
+    const targetId = currentAsset.id;
+    const nextMine = !reactions.mine;
+
+    setIsTogglingReaction(true);
+    setReactions((current) => ({
+      count: Math.max(0, current.count + (nextMine ? 1 : -1)),
+      mine: nextMine,
+    }));
+
+    try {
+      if (nextMine) {
+        const { error } = await (supabase.from('reactions') as any).insert({
+          space_id: spaceId,
+          asset_id: targetId,
+          user_id: userId,
+          emoji: REACTION_EMOJI,
+        });
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('reactions')
+          .delete()
+          .eq('asset_id', targetId)
+          .eq('user_id', userId)
+          .eq('emoji', REACTION_EMOJI);
+        if (error) throw error;
+      }
+    } catch (error: any) {
+      // 낙관적으로 바꿔 둔 표시를 되돌린다.
+      setReactions((current) => ({
+        count: Math.max(0, current.count + (nextMine ? -1 : 1)),
+        mine: !nextMine,
+      }));
+      Alert.alert('반응 실패', error?.message || '반응을 남기지 못했습니다.');
+    } finally {
+      setIsTogglingReaction(false);
+    }
+  };
+
+  const handleToggleFavorite = async () => {
+    if (!currentAsset || !spaceId || !userId || isTogglingFavorite) return;
+
+    const targetId = currentAsset.id;
+    const nextFavorite = !isFavorite;
+
+    setIsTogglingFavorite(true);
+    setIsFavorite(nextFavorite);
+
+    try {
+      if (nextFavorite) {
+        const { error } = await (supabase.from('favorites') as any).insert({
+          space_id: spaceId,
+          asset_id: targetId,
+          user_id: userId,
+        });
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('favorites')
+          .delete()
+          .eq('asset_id', targetId)
+          .eq('user_id', userId);
+        if (error) throw error;
+      }
+    } catch (error: any) {
+      setIsFavorite(!nextFavorite);
+      Alert.alert('즐겨찾기 실패', error?.message || '즐겨찾기를 바꾸지 못했습니다.');
+    } finally {
+      setIsTogglingFavorite(false);
+    }
+  };
 
   const handleDownload = async () => {
     if (!currentAsset) return;
@@ -664,7 +809,7 @@ export default function AssetDetailScreen() {
 
     Alert.alert(
       `${mediaLabel} 삭제`,
-      `이 ${mediaLabel}을 Google Drive 휴지통으로 옮길까요?\n앱 목록에서는 사라지며, 복구하려면 Google Drive에서 해야 합니다.`,
+      `이 ${mediaLabel}을 휴지통으로 옮길까요?\n앨범 목록에서는 사라지지만 휴지통에서 되돌릴 수 있어요.`,
       [
         { text: '취소', style: 'cancel' },
         {
@@ -679,7 +824,7 @@ export default function AssetDetailScreen() {
               if (nextList.length === 0) {
                 Alert.alert(
                   '삭제 완료',
-                  `${mediaLabel}을 Google Drive 휴지통으로 옮겼어요.\n모든 항목이 삭제되어 이전 화면으로 돌아갑니다.`,
+                  `${mediaLabel}을 휴지통으로 옮겼어요.\n모든 항목이 삭제되어 이전 화면으로 돌아갑니다.`,
                   [{ text: '확인', onPress: () => router.back() }]
                 );
               } else {
@@ -689,7 +834,7 @@ export default function AssetDetailScreen() {
                 router.setParams({ assetId: nextList[nextIndex].id, ...(source ? { source } : {}) });
                 Alert.alert(
                   '삭제 완료',
-                  `${mediaLabel}을 Google Drive 휴지통으로 옮겼어요.`
+                  `${mediaLabel}을 휴지통으로 옮겼어요.`
                 );
               }
             } catch (e: any) {
@@ -826,7 +971,40 @@ export default function AssetDetailScreen() {
         }}
       />
 
-      {/* 3. Bottom Toolbar */}
+      {/* 3. 반응 · 댓글 */}
+      <View style={styles.socialBar}>
+        <TouchableOpacity
+          style={[styles.socialBtn, reactions.mine && styles.socialBtnActive]}
+          onPress={handleToggleReaction}
+          disabled={isTogglingReaction}
+          accessibilityLabel={reactions.mine ? '반응 취소' : '반응 남기기'}
+        >
+          <Text style={styles.socialBtnText}>
+            {reactions.mine ? REACTION_EMOJI : '🤍'} {reactions.count}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.socialBtn}
+          onPress={() => setShowComments(true)}
+          accessibilityLabel="댓글 보기"
+        >
+          <Text style={styles.socialBtnText}>
+            💬 {commentCounts[currentAsset.id] ?? 0}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.socialBtn, isFavorite && styles.favoriteBtnActive]}
+          onPress={handleToggleFavorite}
+          disabled={isTogglingFavorite}
+          accessibilityLabel={isFavorite ? '즐겨찾기 해제' : '즐겨찾기'}
+        >
+          <Text style={styles.socialBtnText}>{isFavorite ? '⭐' : '☆'}</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* 4. Bottom Toolbar */}
       <View style={styles.toolbar}>
         <TouchableOpacity
           style={[styles.toolBtn, isDownloading && styles.disabledBtn]}
@@ -850,6 +1028,16 @@ export default function AssetDetailScreen() {
           <Text style={styles.dangerBtnText}>🗑️ 삭제</Text>
         </TouchableOpacity>
       </View>
+
+      {spaceId ? (
+        <AssetCommentsModal
+          visible={showComments}
+          spaceId={spaceId}
+          assetId={currentAsset.id}
+          onClose={() => setShowComments(false)}
+          onCountChange={handleCommentCountChange}
+        />
+      ) : null}
 
       <FolderPickerModal
         visible={showFolderPicker}
@@ -912,6 +1100,34 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 14,
     marginBottom: spacing.xs,
+  },
+  socialBar: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    backgroundColor: colors.surface,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  socialBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    borderRadius: radius.full,
+    backgroundColor: colors.surfaceAlt,
+  },
+  socialBtnActive: {
+    backgroundColor: 'rgba(248, 113, 113, 0.2)',
+  },
+  favoriteBtnActive: {
+    backgroundColor: 'rgba(251, 191, 36, 0.2)',
+  },
+  socialBtnText: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '600',
   },
   toolbar: {
     flexDirection: 'row',

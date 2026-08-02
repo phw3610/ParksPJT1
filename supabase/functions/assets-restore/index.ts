@@ -11,6 +11,7 @@ import {
 import { DriveError, GoogleDriveProvider } from "../_shared/googleDrive.ts";
 import { getAccessToken } from "../_shared/tokens.ts";
 
+/** 휴지통에서 되돌리기. Drive 휴지통에서도 함께 꺼낸다. */
 Deno.serve(
   withErrorHandling(async (req) => {
     if (req.method !== "POST") {
@@ -19,15 +20,13 @@ Deno.serve(
     const { admin, user } = await authenticate(req);
     const body = await parseJson(req);
     const assetIds = requireStringArray(body.assetIds, "assetIds", 100);
-    const deleteRemote = body.deleteRemote !== false;
+
     const { data: assets, error } = await admin
       .from("assets")
-      .select(
-        "id,space_id,uploader_id,remote_file_id,remote_path,thumb_path,deleted_at",
-      )
+      .select("id,space_id,uploader_id,remote_file_id,remote_path,deleted_at")
       .in("id", assetIds);
     if (error) {
-      throw new HttpError(500, "UNKNOWN", "삭제할 에셋을 조회하지 못했습니다.");
+      throw new HttpError(500, "UNKNOWN", "되돌릴 에셋을 조회하지 못했습니다.");
     }
     if (!assets || assets.length !== assetIds.length) {
       throw new HttpError(404, "NOT_FOUND", "일부 에셋을 찾을 수 없습니다.");
@@ -48,15 +47,19 @@ Deno.serve(
         throw new HttpError(
           403,
           "FORBIDDEN",
-          "일부 에셋을 삭제할 권한이 없습니다.",
+          "일부 에셋을 되돌릴 권한이 없습니다.",
         );
       }
     }
 
     const providers = new Map<string, GoogleDriveProvider>();
+    const restored: string[] = [];
+    const missing: string[] = [];
+
     for (const asset of assets) {
-      if (asset.deleted_at) continue;
-      if (deleteRemote && asset.remote_file_id) {
+      if (!asset.deleted_at) continue;
+
+      if (asset.remote_file_id) {
         let drive = providers.get(asset.space_id);
         if (!drive) {
           const connection = await getActiveConnection(admin, asset.space_id);
@@ -66,36 +69,39 @@ Deno.serve(
           providers.set(asset.space_id, drive);
         }
         try {
-          await drive.delete({
+          await drive.restore({
             fileId: asset.remote_file_id,
             path: asset.remote_path,
           });
         } catch (error) {
-          // A missing remote file already satisfies the requested end state.
-          if (!(error instanceof DriveError && error.code === "NOT_FOUND")) {
-            throw error;
+          // Drive에서 이미 완전히 지워졌으면 되돌려도 볼 수 없다. 앱 상태도 바꾸지 않는다.
+          if (error instanceof DriveError && error.code === "NOT_FOUND") {
+            await admin.from("assets").update({
+              status: "orphaned",
+              error_code: "NOT_FOUND",
+            }).eq("id", asset.id);
+            missing.push(asset.id);
+            continue;
           }
+          throw error;
         }
       }
 
-      // 썸네일은 남겨 둔다. 앱 휴지통에서 무엇을 지웠는지 보고 복원해야 하기 때문이다.
-      // 실제 파일 정리는 휴지통에서 완전히 지울 때(assets-purge) 한다.
       const { error: updateError } = await admin
         .from("assets")
         .update({
-          deleted_at: new Date().toISOString(),
-          status: "trashed",
+          deleted_at: null,
+          status: "ready",
+          error_code: null,
         })
         .eq("id", asset.id)
-        .is("deleted_at", null);
+        .not("deleted_at", "is", null);
       if (updateError) {
-        throw new HttpError(
-          500,
-          "UNKNOWN",
-          "에셋 삭제 상태를 저장하지 못했습니다.",
-        );
+        throw new HttpError(500, "UNKNOWN", "에셋을 되돌리지 못했습니다.");
       }
+      restored.push(asset.id);
     }
-    return json({ ok: true });
+
+    return json({ ok: true, restored, missing });
   }),
 );

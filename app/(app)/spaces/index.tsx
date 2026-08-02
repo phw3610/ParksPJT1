@@ -1,5 +1,5 @@
-import { useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import { useFocusEffect, useRouter } from 'expo-router';
+import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -20,6 +20,57 @@ import { colors, radius, spacing, typography } from '@/lib/theme';
 
 interface SpaceWithRole extends Space {
   role: string;
+  joined_at: string;
+  unreadCount: number;
+}
+
+/**
+ * 미확인 = 내가 마지막으로 앨범을 연 뒤에 다른 사람이 올린 것.
+ * 읽음 기록이 없으면 참여 시각을 기준으로 삼는다. 참여 전 사진까지 미확인으로 세면
+ * 새로 들어온 사람에게 수백 장이 미확인으로 뜬다.
+ */
+async function fetchUnreadCounts(
+  userId: string,
+  spaces: { id: string; joined_at: string }[],
+): Promise<Record<string, number>> {
+  if (spaces.length === 0) return {};
+
+  try {
+    const { data: readStates, error } = await supabase
+      .from('space_read_state')
+      .select('space_id, last_read_at')
+      .eq('user_id', userId);
+
+    if (error) throw error;
+
+    const lastReadBySpace = new Map(
+      ((readStates as { space_id: string; last_read_at: string }[] | null) ?? []).map((row) => [
+        row.space_id,
+        row.last_read_at,
+      ]),
+    );
+
+    const counts = await Promise.all(
+      spaces.map(async (space) => {
+        const since = lastReadBySpace.get(space.id) ?? space.joined_at;
+        const { count } = await supabase
+          .from('assets')
+          .select('id', { count: 'exact', head: true })
+          .eq('space_id', space.id)
+          .is('deleted_at', null)
+          .neq('uploader_id', userId)
+          .gt('created_at', since);
+
+        return [space.id, count ?? 0] as const;
+      }),
+    );
+
+    return Object.fromEntries(counts);
+  } catch (error) {
+    // 0006 마이그레이션 적용 전에는 space_read_state가 없다. 배지만 빠지고 목록은 그대로 뜬다.
+    console.warn('[spaces] 미확인 개수를 계산하지 못했습니다.', error);
+    return {};
+  }
 }
 
 export function normalizeInviteToken(input: string): string {
@@ -56,7 +107,7 @@ export default function SpaceListScreen() {
     try {
       const { data, error } = await supabase
         .from('space_members')
-        .select('role, spaces(*)')
+        .select('role, joined_at, spaces(*)')
         .eq('user_id', user.id);
 
       if (error) throw error;
@@ -67,11 +118,21 @@ export default function SpaceListScreen() {
           return {
             ...row.spaces,
             role: row.role,
+            joined_at: row.joined_at,
+            unreadCount: 0,
           };
         })
         .filter(Boolean);
 
       setSpaces(items);
+
+      const unreadCounts = await fetchUnreadCounts(
+        user.id,
+        items.map((space) => ({ id: space.id, joined_at: space.joined_at })),
+      );
+      setSpaces(
+        items.map((space) => ({ ...space, unreadCount: unreadCounts[space.id] ?? 0 })),
+      );
     } catch {
       /* 에러 처리 */
     } finally {
@@ -80,9 +141,12 @@ export default function SpaceListScreen() {
     }
   };
 
-  useEffect(() => {
-    fetchSpaces();
-  }, [user]);
+  // 앨범을 보고 돌아오면 미확인 배지가 바로 사라져야 하므로 포커스마다 다시 읽는다.
+  useFocusEffect(
+    useCallback(() => {
+      fetchSpaces();
+    }, [user]),
+  );
 
   const onRefresh = () => {
     setIsRefreshing(true);
@@ -250,7 +314,16 @@ export default function SpaceListScreen() {
                 onPress={() => router.push(`/(app)/spaces/${item.id}`)}
               >
                 <View style={styles.cardHeader}>
-                  <Text style={styles.spaceName}>{item.name}</Text>
+                  <View style={styles.spaceNameRow}>
+                    <Text style={styles.spaceName}>{item.name}</Text>
+                    {item.unreadCount > 0 && (
+                      <View style={styles.unreadBadge}>
+                        <Text style={styles.unreadText}>
+                          {item.unreadCount > 99 ? '99+' : item.unreadCount}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
                   <View style={styles.roleBadge}>
                     <Text style={styles.roleText}>{getRoleLabel(item.role)}</Text>
                   </View>
@@ -493,10 +566,29 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: spacing.xs,
   },
+  spaceNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    flexShrink: 1,
+  },
   spaceName: {
     fontSize: 18,
     fontWeight: '700',
     color: colors.text,
+  },
+  unreadBadge: {
+    minWidth: 22,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: radius.full,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+  },
+  unreadText: {
+    color: colors.primaryText,
+    fontSize: 11,
+    fontWeight: '700',
   },
   roleBadge: {
     backgroundColor: colors.surfaceAlt,

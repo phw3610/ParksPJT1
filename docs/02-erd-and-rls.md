@@ -353,6 +353,34 @@ create table reactions (
 );
 ```
 
+### 2.10-1 favorites / space_read_state (Phase 2, `0006`에서 추가)
+
+```sql
+create table favorites (
+  space_id   uuid not null references spaces(id) on delete cascade,
+  asset_id   uuid not null references assets(id) on delete cascade,
+  user_id    uuid not null references profiles(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (asset_id, user_id)
+);
+
+create table space_read_state (
+  space_id     uuid not null references spaces(id) on delete cascade,
+  user_id      uuid not null references profiles(id) on delete cascade,
+  last_read_at timestamptz not null default now(),
+  primary key (space_id, user_id)
+);
+```
+
+즐겨찾기는 **개인 북마크**다. 다 같이 보는 반응은 `reactions`가 이미 맡고 있으므로
+남의 즐겨찾기를 볼 이유가 없다 — RLS는 select까지 본인 행으로 제한한다.
+
+읽음 표시는 **에셋마다 행을 만들지 않는다.** 스페이스별 "마지막으로 본 시각" 하나면
+미확인 = 그 시각 이후에 올라온 것으로 계산되고, 행이 멤버당 1개로 끝난다.
+사진이 몇 만 장이 되어도 이 테이블은 멤버 수만큼만 커진다.
+읽음 기록이 없으면 `space_members.joined_at`을 기준으로 삼는다 —
+참여 전 사진까지 세면 새로 들어온 사람에게 수백 장이 미확인으로 뜬다.
+
 ### 2.11 notification_batches — 푸시 debounce 상태 (내부 전용)
 
 `docs/03` §2.7의 "10분 창 debounce"는 Edge Function만으로는 구현할 수 없다.

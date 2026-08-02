@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 
 import { useAuth } from '@/auth';
+import { FavoritesView } from '@/components/FavoritesView';
 import { FolderBrowser } from '@/components/FolderBrowser';
 import { TimelineView } from '@/components/TimelineView';
 import { supabase } from '@/lib/supabase';
@@ -24,7 +25,7 @@ export default function SpaceHomeScreen() {
   const [spaceName, setSpaceName] = useState<string>('');
   const [isOwner, setIsOwner] = useState(false);
   const [canManage, setCanManage] = useState(false);
-  const [viewMode, setViewMode] = useState<'folder' | 'timeline'>('folder');
+  const [viewMode, setViewMode] = useState<'folder' | 'timeline' | 'favorites'>('folder');
 
   // Rename modal state
   const [showRenameModal, setShowRenameModal] = useState(false);
@@ -70,6 +71,30 @@ export default function SpaceHomeScreen() {
 
   useEffect(() => {
     fetchSpaceInfo();
+  }, [spaceId, user]);
+
+  // 앨범을 열면 확인한 것으로 본다. 목록의 미확인 배지는 이 시각을 기준으로 계산된다.
+  useEffect(() => {
+    if (!spaceId || !user) return;
+
+    const markAsRead = async () => {
+      try {
+        const { error } = await (supabase.from('space_read_state') as any).upsert(
+          {
+            space_id: spaceId,
+            user_id: user.id,
+            last_read_at: new Date().toISOString(),
+          },
+          { onConflict: 'space_id,user_id' },
+        );
+        if (error) throw error;
+      } catch (error) {
+        // 0006 마이그레이션 적용 전에는 테이블이 없다. 앨범을 여는 것 자체를 막지는 않는다.
+        console.warn('[space-home] 읽음 표시를 저장하지 못했습니다.', error);
+      }
+    };
+
+    void markAsRead();
   }, [spaceId, user]);
 
   const handleRenameSpace = async () => {
@@ -189,12 +214,23 @@ export default function SpaceHomeScreen() {
             📅 타임라인
           </Text>
         </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.toggleBtn, viewMode === 'favorites' && styles.toggleBtnActive]}
+          onPress={() => setViewMode('favorites')}
+          activeOpacity={0.8}
+        >
+          <Text style={[styles.toggleText, viewMode === 'favorites' && styles.toggleTextActive]}>
+            ⭐ 즐겨찾기
+          </Text>
+        </TouchableOpacity>
       </View>
 
       {viewMode === 'folder' ? (
         <FolderBrowser spaceId={spaceId!} folderId={null} />
-      ) : (
+      ) : viewMode === 'timeline' ? (
         <TimelineView spaceId={spaceId!} />
+      ) : (
+        <FavoritesView spaceId={spaceId!} />
       )}
 
       {/* Rename Modal */}

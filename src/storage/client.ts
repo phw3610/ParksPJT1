@@ -79,6 +79,43 @@ export async function deleteAssets(assetIds: string[], deleteRemote = true) {
   return wrap(() => callFunction<{ ok: true }>('assets-delete', { assetIds, deleteRemote }));
 }
 
+/** 휴지통 항목. canRestore는 되돌리기·완전삭제 권한이 있는지를 서버가 판단한 값이다. */
+export interface TrashedAsset {
+  id: string;
+  space_id: string;
+  folder_id: string | null;
+  uploader_id: string;
+  kind: 'image' | 'video';
+  original_name: string;
+  byte_size: number;
+  width: number | null;
+  height: number | null;
+  duration_ms: number | null;
+  thumb_path: string | null;
+  captured_at: string | null;
+  created_at: string;
+  deleted_at: string;
+  canRestore: boolean;
+}
+
+export async function listTrashedAssets(spaceId: string) {
+  return wrap(() => callFunction<{ items: TrashedAsset[] }>('assets-trashed', { spaceId }));
+}
+
+export async function restoreAssets(assetIds: string[]) {
+  return wrap(() =>
+    callFunction<{ ok: true; restored: string[]; missing: string[] }>('assets-restore', {
+      assetIds,
+    }),
+  );
+}
+
+export async function purgeAssets(assetIds: string[]) {
+  return wrap(() =>
+    callFunction<{ ok: true; purged: number }>('assets-purge', { assetIds }),
+  );
+}
+
 const KNOWN_CODES: StorageErrorCode[] = [
   'TOKEN_EXPIRED',
   'REVOKED',

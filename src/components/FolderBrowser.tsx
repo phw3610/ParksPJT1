@@ -28,6 +28,7 @@ import { useSpaceRealtime } from '@/realtime/useSpaceRealtime';
 import { deleteAssets } from '@/storage/client';
 import { downloadAssetsToCameraRoll } from '@/storage/downloadToCameraRoll';
 import { isReconnectErrorCode } from '@/storage/errors';
+import { computeQuickHash } from '@/storage/quickHash';
 import {
   createThumbnailSignedUrls,
   THUMBNAIL_URL_REFRESH_MS,
@@ -98,6 +99,34 @@ function queueNeedsReconnect(items: UploadQueueItem[], spaceId: string): boolean
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, '\\$&');
+}
+
+/**
+ * 같은 앨범에 같은 지문이 이미 있으면 다시 올리지 않는다.
+ * 조회가 실패하면 중복이 아니라고 보고 그냥 올린다 — 중복보다 누락이 나쁘다.
+ */
+async function isDuplicateUpload(
+  spaceId: string,
+  quickHash: string,
+  queuedHashes: Set<string>,
+): Promise<boolean> {
+  if (queuedHashes.has(quickHash)) return true;
+
+  try {
+    const { data, error } = await supabase
+      .from('assets')
+      .select('id')
+      .eq('space_id', spaceId)
+      .eq('content_hash', quickHash)
+      .is('deleted_at', null)
+      .limit(1);
+
+    if (error) throw error;
+    return (data ?? []).length > 0;
+  } catch (error) {
+    console.warn('[upload-queue] 중복 여부를 확인하지 못했습니다.', error);
+    return false;
+  }
 }
 
 export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) {
@@ -576,7 +605,15 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
     if (result.canceled || !result.assets) return;
 
     const skippedFiles: string[] = [];
+    const duplicateFiles: string[] = [];
     let enqueuedCount = 0;
+
+    // 이미 큐에 들어와 있는 것과도 겹치지 않게 한 번만 읽어 둔다.
+    const queuedHashes = new Set(
+      (await getAllItemsForSpace(spaceId))
+        .filter((queued) => queued.status !== 'done' && queued.quick_hash)
+        .map((queued) => queued.quick_hash as string),
+    );
 
     for (const item of result.assets) {
       const fileName = item.fileName || `IMG_${Date.now()}.${item.type === 'video' ? 'mp4' : 'jpg'}`;
@@ -584,6 +621,14 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
 
       try {
         const byteSize = await resolveByteSize(item);
+        const quickHash = await computeQuickHash(item.uri, byteSize);
+
+        if (quickHash && (await isDuplicateUpload(spaceId, quickHash, queuedHashes))) {
+          duplicateFiles.push(fileName);
+          continue;
+        }
+        if (quickHash) queuedHashes.add(quickHash);
+
         await queueManager.enqueue({
           spaceId,
           folderId,
@@ -595,6 +640,7 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
           width: positiveInteger(item.width),
           height: positiveInteger(item.height),
           durationMs: positiveInteger(item.duration),
+          quickHash,
           kind: item.type === 'video' ? 'video' : 'image',
         });
         enqueuedCount += 1;
@@ -610,16 +656,26 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
 
     if (enqueuedCount === 0) {
       Alert.alert(
-        '업로드 준비 실패',
-        '선택한 파일의 실제 크기를 확인하지 못해 업로드 큐에 추가하지 않았습니다.',
+        duplicateFiles.length > 0 ? '이미 올린 파일이에요' : '업로드 준비 실패',
+        duplicateFiles.length > 0
+          ? `선택한 ${duplicateFiles.length}개가 모두 이 앨범에 이미 있어요.`
+          : '선택한 파일의 실제 크기를 확인하지 못해 업로드 큐에 추가하지 않았습니다.',
       );
       return;
     }
 
-    if (skippedFiles.length > 0) {
+    if (duplicateFiles.length > 0 || skippedFiles.length > 0) {
+      const reasons: string[] = [];
+      if (duplicateFiles.length > 0) {
+        reasons.push(`${duplicateFiles.length}개는 이미 올라와 있어 건너뛰었습니다.`);
+      }
+      if (skippedFiles.length > 0) {
+        reasons.push(`${skippedFiles.length}개는 파일 정보를 확인하지 못해 제외했습니다.`);
+      }
+
       Alert.alert(
-        '일부 파일 준비 실패',
-        `${enqueuedCount}개는 업로드 큐에 추가했고 ${skippedFiles.length}개는 파일 정보를 확인하지 못해 제외했습니다.`,
+        '일부 파일 제외',
+        `${enqueuedCount}개를 업로드 큐에 추가했습니다.\n${reasons.join('\n')}`,
       );
     }
     router.push(`/(app)/spaces/${spaceId}/queue`);
@@ -715,7 +771,7 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
 
     Alert.alert(
       '사진 삭제',
-      `선택한 ${assetIds.length}장의 사진을 Google Drive 휴지통으로 옮길까요?\n앱 목록에서는 사라지며, 복구하려면 Google Drive에서 해야 합니다.`,
+      `선택한 ${assetIds.length}장을 휴지통으로 옮길까요?\n앨범 목록에서는 사라지지만 휴지통에서 되돌릴 수 있어요.`,
       [
         { text: '취소', style: 'cancel' },
         {
@@ -731,7 +787,7 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
               await fetchData();
               Alert.alert(
                 '삭제 완료',
-                `${assetIds.length}장의 사진을 Google Drive 휴지통으로 옮겼어요.\n앱 목록에서는 사라졌으며, 복구하려면 Google Drive에서 복원해 주세요.`,
+                `${assetIds.length}장을 휴지통으로 옮겼어요.\n되돌리려면 휴지통에서 복원해 주세요.`,
               );
             } catch (error: any) {
               Alert.alert('삭제 실패', error?.message || '사진을 삭제하지 못했습니다.');
@@ -854,6 +910,12 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
         </View>
 
         <View style={styles.headerRight}>
+          <TouchableOpacity
+            style={styles.iconBtn}
+            onPress={() => router.push(`/(app)/spaces/${spaceId}/trash`)}
+          >
+            <Text style={styles.iconBtnText}>🗑️ 휴지통</Text>
+          </TouchableOpacity>
           <TouchableOpacity
             style={styles.iconBtn}
             onPress={() => router.push(`/(app)/spaces/${spaceId}/members`)}

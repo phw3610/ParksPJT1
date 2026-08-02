@@ -203,6 +203,16 @@ export class GoogleDriveProvider implements StorageProvider {
     );
   }
 
+  async restore(ref: RemoteRef): Promise<void> {
+    await this.req(
+      `${DRIVE}/files/${encodeURIComponent(ref.fileId)}?fields=id,trashed`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ trashed: false }),
+      },
+    );
+  }
+
   async quota(): Promise<{ limit: number | null; usage: number } | null> {
     const about = await this.about();
     const quota = about.storageQuota;
