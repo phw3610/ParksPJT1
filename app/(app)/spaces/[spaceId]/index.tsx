@@ -12,6 +12,7 @@ import {
 
 import { useAuth } from '@/auth';
 import { FolderBrowser } from '@/components/FolderBrowser';
+import { TimelineView } from '@/components/TimelineView';
 import type { MemberRole } from '@/lib/database.types';
 import { supabase } from '@/lib/supabase';
 import { colors, radius, spacing, typography } from '@/lib/theme';
@@ -25,6 +26,7 @@ export default function SpaceHomeScreen() {
   const [role, setRole] = useState<MemberRole | null>(null);
   const [isOwner, setIsOwner] = useState(false);
   const [canManage, setCanManage] = useState(false);
+  const [viewMode, setViewMode] = useState<'folder' | 'timeline'>('folder');
 
   // Rename modal state
   const [showRenameModal, setShowRenameModal] = useState(false);
@@ -207,7 +209,32 @@ export default function SpaceHomeScreen() {
         }}
       />
 
-      <FolderBrowser spaceId={spaceId!} folderId={null} />
+      <View style={styles.viewToggleBar}>
+        <TouchableOpacity
+          style={[styles.toggleBtn, viewMode === 'folder' && styles.toggleBtnActive]}
+          onPress={() => setViewMode('folder')}
+          activeOpacity={0.8}
+        >
+          <Text style={[styles.toggleText, viewMode === 'folder' && styles.toggleTextActive]}>
+            📁 폴더
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.toggleBtn, viewMode === 'timeline' && styles.toggleBtnActive]}
+          onPress={() => setViewMode('timeline')}
+          activeOpacity={0.8}
+        >
+          <Text style={[styles.toggleText, viewMode === 'timeline' && styles.toggleTextActive]}>
+            📅 타임라인
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {viewMode === 'folder' ? (
+        <FolderBrowser spaceId={spaceId!} folderId={null} />
+      ) : (
+        <TimelineView spaceId={spaceId!} />
+      )}
 
       {/* Rename Modal */}
       <Modal visible={showRenameModal} transparent animationType="fade">
@@ -332,5 +359,33 @@ const styles = StyleSheet.create({
   },
   disabledBtn: {
     opacity: 0.6,
+  },
+  viewToggleBar: {
+    flexDirection: 'row',
+    backgroundColor: colors.surface,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    gap: spacing.sm,
+  },
+  toggleBtn: {
+    flex: 1,
+    paddingVertical: spacing.xs,
+    alignItems: 'center',
+    borderRadius: radius.sm,
+    backgroundColor: colors.surfaceAlt,
+  },
+  toggleBtnActive: {
+    backgroundColor: colors.primary,
+  },
+  toggleText: {
+    color: colors.textMuted,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  toggleTextActive: {
+    color: colors.primaryText,
+    fontWeight: '700',
   },
 });
