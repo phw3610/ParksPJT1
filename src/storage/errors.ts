@@ -78,7 +78,11 @@ export function isRetryable(e: unknown): boolean {
  * 사용자가 다시 연결하면 밀린 항목이 그대로 이어진다.
  */
 export function needsReconnect(e: unknown): boolean {
-  return e instanceof StorageError && (e.code === 'TOKEN_EXPIRED' || e.code === 'REVOKED');
+  return e instanceof StorageError && isReconnectErrorCode(e.code);
+}
+
+export function isReconnectErrorCode(code: string | null | undefined): boolean {
+  return code === 'TOKEN_EXPIRED' || code === 'REVOKED';
 }
 
 /** 지수 백오프 + 지터. Retry-After 헤더가 있으면 그 값을 우선한다. */

@@ -13,6 +13,9 @@ export interface UploadQueueItem {
   mime_type: string;
   byte_size: number;
   captured_at: number | null;
+  width: number | null;
+  height: number | null;
+  duration_ms: number | null;
   quick_hash: string | null;
   asset_id: string | null;
   upload_url: string | null;
@@ -44,6 +47,9 @@ export async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
       mime_type     TEXT NOT NULL,
       byte_size     INTEGER NOT NULL,
       captured_at   INTEGER,
+      width         INTEGER,
+      height        INTEGER,
+      duration_ms   INTEGER,
       quick_hash    TEXT,
       asset_id      TEXT,
       upload_url    TEXT,
@@ -89,6 +95,15 @@ export async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
   if (!queueColumnNames.has('last_error_status')) {
     await dbInstance.execAsync('ALTER TABLE upload_queue ADD COLUMN last_error_status INTEGER;');
   }
+  if (!queueColumnNames.has('width')) {
+    await dbInstance.execAsync('ALTER TABLE upload_queue ADD COLUMN width INTEGER;');
+  }
+  if (!queueColumnNames.has('height')) {
+    await dbInstance.execAsync('ALTER TABLE upload_queue ADD COLUMN height INTEGER;');
+  }
+  if (!queueColumnNames.has('duration_ms')) {
+    await dbInstance.execAsync('ALTER TABLE upload_queue ADD COLUMN duration_ms INTEGER;');
+  }
 
   return dbInstance;
 }
@@ -123,6 +138,9 @@ export async function enqueueItem(
     mime_type: item.mime_type,
     byte_size: item.byte_size,
     captured_at: item.captured_at,
+    width: item.width,
+    height: item.height,
+    duration_ms: item.duration_ms,
     quick_hash: item.quick_hash,
     asset_id: null,
     upload_url: null,
@@ -139,8 +157,8 @@ export async function enqueueItem(
 
   await db.runAsync(
     `INSERT INTO upload_queue
-      (id, space_id, folder_id, local_id, file_uri, original_name, mime_type, byte_size, captured_at, quick_hash, status, source, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+      (id, space_id, folder_id, local_id, file_uri, original_name, mime_type, byte_size, captured_at, width, height, duration_ms, quick_hash, status, source, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
     [
       newItem.id,
       newItem.space_id,
@@ -151,6 +169,9 @@ export async function enqueueItem(
       newItem.mime_type,
       newItem.byte_size,
       newItem.captured_at,
+      newItem.width,
+      newItem.height,
+      newItem.duration_ms,
       newItem.quick_hash,
       newItem.source,
       newItem.created_at,
@@ -240,6 +261,22 @@ export async function updateItemStatus(
 export async function resetUploadingToPending(): Promise<void> {
   const db = await getDatabase();
   await db.runAsync(`UPDATE upload_queue SET status = 'pending' WHERE status = 'uploading'`);
+}
+
+export async function hasPausedItems(): Promise<boolean> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ count: number }>(
+    `SELECT COUNT(*) AS count FROM upload_queue WHERE status = 'paused'`,
+  );
+  return (row?.count ?? 0) > 0;
+}
+
+export async function resumePausedItems(spaceId: string): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync(
+    `UPDATE upload_queue SET status = 'pending' WHERE space_id = ? AND status = 'paused'`,
+    [spaceId],
+  );
 }
 
 export async function deleteQueueItem(id: string): Promise<void> {

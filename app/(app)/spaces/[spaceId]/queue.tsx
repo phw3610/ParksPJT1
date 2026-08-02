@@ -11,6 +11,7 @@ import {
 
 import { colors, radius, spacing, typography } from '@/lib/theme';
 import { getAllItemsForSpace, queueManager, UploadQueueItem } from '@/queue';
+import { isReconnectErrorCode } from '@/storage/errors';
 
 export default function QueueScreen() {
   const { spaceId } = useLocalSearchParams<{ spaceId: string }>();
@@ -102,6 +103,8 @@ export default function QueueScreen() {
           contentContainerStyle={styles.listContent}
           renderItem={({ item }) => {
             const isErrorExpanded = expandedErrorIds.has(item.id);
+            const isReconnectPaused =
+              item.status === 'paused' && isReconnectErrorCode(item.last_error_code);
             const percent =
               item.byte_size > 0
                 ? Math.min(Math.round((item.bytes_sent / item.byte_size) * 100), 100)
@@ -166,8 +169,15 @@ export default function QueueScreen() {
                   </View>
                 )}
 
+                {isReconnectPaused && (
+                  <Text style={styles.reconnectHelp}>
+                    앨범 소유자가 Google Drive를 재인증하면 이 업로드가 자동으로 다시 시작됩니다.
+                  </Text>
+                )}
+
                 <View style={styles.actionRow}>
-                  {(item.status === 'failed' || item.status === 'paused') && (
+                  {(item.status === 'failed' ||
+                    (item.status === 'paused' && !isReconnectPaused)) && (
                     <TouchableOpacity
                       style={styles.retryBtn}
                       onPress={() => handleRetry(item.id)}
@@ -314,6 +324,11 @@ const styles = StyleSheet.create({
     borderRadius: radius.sm,
     fontSize: 11,
     fontFamily: 'monospace',
+  },
+  reconnectHelp: {
+    marginTop: spacing.xs,
+    color: colors.warning,
+    fontSize: 12,
   },
   actionRow: {
     flexDirection: 'row',

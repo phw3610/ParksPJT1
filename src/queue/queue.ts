@@ -18,7 +18,9 @@ import {
   getAllItemsForSpace,
   getDatabase,
   getPendingItems,
+  hasPausedItems,
   resetUploadingToPending,
+  resumePausedItems,
   updateItemStatus,
   UploadQueueItem,
   UploadQueueStatus,
@@ -38,7 +40,8 @@ class QueueManager {
     await getDatabase();
     // 앱 재시작 시 기존 'uploading' 상태였던 항목을 'pending'으로 복구하여 재개 가능하게 함
     await resetUploadingToPending();
-    this.processQueue();
+    this.isPaused = await hasPausedItems();
+    if (!this.isPaused) this.processQueue();
   }
 
   subscribe(listener: QueueListener): () => void {
@@ -58,8 +61,11 @@ class QueueManager {
     this.isPaused = true;
   }
 
-  resume() {
+  async resume(spaceId: string) {
+    await this.init();
+    await resumePausedItems(spaceId);
     this.isPaused = false;
+    await this.notifyListeners(spaceId);
     this.processQueue();
   }
 
@@ -72,6 +78,9 @@ class QueueManager {
     mimeType: string;
     byteSize: number;
     capturedAt?: number | null;
+    width?: number | null;
+    height?: number | null;
+    durationMs?: number | null;
     kind: 'image' | 'video';
     source?: 'manual' | 'auto';
   }): Promise<UploadQueueItem> {
@@ -85,6 +94,9 @@ class QueueManager {
       mime_type: input.mimeType,
       byte_size: input.byteSize,
       captured_at: input.capturedAt ?? null,
+      width: input.width ?? null,
+      height: input.height ?? null,
+      duration_ms: input.durationMs ?? null,
       quick_hash: null,
       source: input.source ?? 'manual',
     });
@@ -151,6 +163,9 @@ class QueueManager {
           mimeType: item.mime_type,
           byteSize: item.byte_size,
           capturedAt: item.captured_at ? new Date(item.captured_at).toISOString() : null,
+          width: item.width ?? undefined,
+          height: item.height ?? undefined,
+          durationMs: item.duration_ms ?? undefined,
           kind,
         });
 

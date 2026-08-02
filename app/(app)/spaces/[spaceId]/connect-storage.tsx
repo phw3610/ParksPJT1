@@ -14,6 +14,7 @@ import { useAuth } from '@/auth';
 import type { MemberRole, StorageConnection } from '@/lib/database.types';
 import { supabase } from '@/lib/supabase';
 import { colors, radius, spacing, typography } from '@/lib/theme';
+import { queueManager } from '@/queue';
 import { connectGoogleDrive, disconnectStorage } from '@/storage/client';
 
 export default function ConnectStorageScreen() {
@@ -86,6 +87,7 @@ export default function ConnectStorageScreen() {
       if (!confirmedConnection) {
         throw new Error('연결 정보를 확인하지 못했습니다. 잠시 후 다시 시도해 주세요.');
       }
+      await queueManager.resume(spaceId);
       Alert.alert('연결 성공', 'Google 드라이브가 연결되었습니다.');
     } catch (e: any) {
       Alert.alert('연결 실패', e.message || 'Google 드라이브를 연결하지 못했습니다.');

@@ -1,4 +1,5 @@
 import { Image } from 'expo-image';
+import { getInfoAsync } from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -21,10 +22,11 @@ import { FolderPickerModal } from '@/components/FolderPickerModal';
 import type { Asset, Folder, StorageConnection } from '@/lib/database.types';
 import { supabase } from '@/lib/supabase';
 import { colors, radius, spacing, typography } from '@/lib/theme';
-import { queueManager } from '@/queue';
+import { getAllItemsForSpace, queueManager, type UploadQueueItem } from '@/queue';
 import { useSpaceRealtime } from '@/realtime/useSpaceRealtime';
 import { deleteAssets } from '@/storage/client';
 import { downloadAssetsToCameraRoll } from '@/storage/downloadToCameraRoll';
+import { isReconnectErrorCode } from '@/storage/errors';
 import {
   createThumbnailSignedUrls,
   THUMBNAIL_URL_REFRESH_MS,
@@ -43,12 +45,63 @@ interface BreadcrumbItem {
   isEllipsis?: boolean;
 }
 
+function positiveInteger(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.round(value)
+    : null;
+}
+
+function capturedAtFromExif(exif: Record<string, unknown> | null | undefined): number | null {
+  if (!exif) return null;
+
+  const rawDate = [exif.DateTimeOriginal, exif.DateTimeDigitized, exif.DateTime].find(
+    (value): value is string => typeof value === 'string' && value.trim().length > 0,
+  );
+  if (!rawDate) return null;
+
+  const match = rawDate
+    .trim()
+    .match(/^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);
+  if (!match) return null;
+
+  const offsetValue = exif.OffsetTimeOriginal;
+  const offset =
+    typeof offsetValue === 'string' && /^[+-]\d{2}:\d{2}$/.test(offsetValue.trim())
+      ? offsetValue.trim()
+      : '';
+  const [, year, month, day, hour, minute, second] = match;
+  const timestamp = Date.parse(`${year}-${month}-${day}T${hour}:${minute}:${second}${offset}`);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+async function resolveByteSize(asset: ImagePicker.ImagePickerAsset): Promise<number> {
+  const pickerSize = positiveInteger(asset.fileSize);
+  if (pickerSize) return pickerSize;
+
+  const fileInfo = await getInfoAsync(asset.uri);
+  const actualSize = fileInfo.exists && !fileInfo.isDirectory ? positiveInteger(fileInfo.size) : null;
+  if (!actualSize) {
+    throw new Error('선택한 파일의 실제 크기를 확인할 수 없습니다.');
+  }
+  return actualSize;
+}
+
+function queueNeedsReconnect(items: UploadQueueItem[], spaceId: string): boolean {
+  return items.some(
+    (item) =>
+      item.space_id === spaceId &&
+      item.status === 'paused' &&
+      isReconnectErrorCode(item.last_error_code),
+  );
+}
+
 export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) {
   const { user } = useAuth();
   const userId = user?.id;
   const router = useRouter();
 
   const [connection, setConnection] = useState<StorageConnection | null>(null);
+  const [hasReconnectPausedItem, setHasReconnectPausedItem] = useState(false);
   /** 저장소 연결·해제는 sc_all 정책상 소유자만 가능하다. 안내 문구를 역할에 맞춰야 한다. */
   const [isOwner, setIsOwner] = useState(false);
   const [canWrite, setCanWrite] = useState(false);
@@ -189,6 +242,31 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
 
   useEffect(() => {
     let isCancelled = false;
+    let unsubscribe: (() => void) | undefined;
+
+    const refreshReconnectState = async () => {
+      const items = await getAllItemsForSpace(spaceId);
+      if (!isCancelled) setHasReconnectPausedItem(queueNeedsReconnect(items, spaceId));
+    };
+
+    const observeQueue = async () => {
+      await queueManager.init();
+      if (isCancelled) return;
+      unsubscribe = queueManager.subscribe(() => {
+        void refreshReconnectState();
+      });
+      await refreshReconnectState();
+    };
+
+    void observeQueue();
+    return () => {
+      isCancelled = true;
+      unsubscribe?.();
+    };
+  }, [spaceId]);
+
+  useEffect(() => {
+    let isCancelled = false;
 
     const refreshThumbnailUrls = async () => {
       try {
@@ -311,6 +389,25 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
   };
 
   const handleUploadClick = async () => {
+    const connectionNeedsReconnect = isReconnectErrorCode(connection?.last_error?.toUpperCase());
+    if (hasReconnectPausedItem || connectionNeedsReconnect) {
+      if (isOwner) {
+        Alert.alert('Google Drive 재인증 필요', '저장소를 다시 연결하면 멈춘 업로드가 이어집니다.', [
+          { text: '취소', style: 'cancel' },
+          {
+            text: '재인증하기',
+            onPress: () => router.push(`/(app)/spaces/${spaceId}/connect-storage`),
+          },
+        ]);
+      } else {
+        Alert.alert(
+          'Google Drive 재인증 필요',
+          '업로드가 멈춰 있어요. 앨범 소유자에게 Google Drive 재인증을 요청해 주세요.',
+        );
+      }
+      return;
+    }
+
     if (!connection) {
       // 저장소 연결은 소유자만 가능하다. 비소유자에게 링크를 주면 막힌 화면으로 보내게 된다.
       if (isOwner) {
@@ -339,25 +436,58 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
     const result = await ImagePicker.launchImageLibraryAsync({
       allowsMultipleSelection: true,
       quality: 1,
+      exif: true,
     });
 
     if (result.canceled || !result.assets) return;
+
+    const skippedFiles: string[] = [];
+    let enqueuedCount = 0;
 
     for (const item of result.assets) {
       const fileName = item.fileName || `IMG_${Date.now()}.${item.type === 'video' ? 'mp4' : 'jpg'}`;
       const mimeType = item.mimeType || (item.type === 'video' ? 'video/mp4' : 'image/jpeg');
 
-      await queueManager.enqueue({
-        spaceId,
-        folderId,
-        fileUri: item.uri,
-        originalName: fileName,
-        mimeType,
-        byteSize: item.fileSize || 1024,
-        kind: item.type === 'video' ? 'video' : 'image',
-      });
+      try {
+        const byteSize = await resolveByteSize(item);
+        await queueManager.enqueue({
+          spaceId,
+          folderId,
+          fileUri: item.uri,
+          originalName: fileName,
+          mimeType,
+          byteSize,
+          capturedAt: capturedAtFromExif(item.exif),
+          width: positiveInteger(item.width),
+          height: positiveInteger(item.height),
+          durationMs: positiveInteger(item.duration),
+          kind: item.type === 'video' ? 'video' : 'image',
+        });
+        enqueuedCount += 1;
+      } catch (error) {
+        skippedFiles.push(fileName);
+        console.error('[upload-queue] Failed to prepare selected file', {
+          fileName,
+          uri: item.uri,
+          error,
+        });
+      }
     }
 
+    if (enqueuedCount === 0) {
+      Alert.alert(
+        '업로드 준비 실패',
+        '선택한 파일의 실제 크기를 확인하지 못해 업로드 큐에 추가하지 않았습니다.',
+      );
+      return;
+    }
+
+    if (skippedFiles.length > 0) {
+      Alert.alert(
+        '일부 파일 준비 실패',
+        `${enqueuedCount}개는 업로드 큐에 추가했고 ${skippedFiles.length}개는 파일 정보를 확인하지 못해 제외했습니다.`,
+      );
+    }
     router.push(`/(app)/spaces/${spaceId}/queue`);
   };
 
@@ -508,10 +638,30 @@ export function FolderBrowser({ spaceId, folderId = null }: FolderBrowserProps) 
     }
   };
 
+  const connectionNeedsReconnect = isReconnectErrorCode(connection?.last_error?.toUpperCase());
+  const needsStorageReconnect = hasReconnectPausedItem || connectionNeedsReconnect;
+
   return (
     <View style={styles.container}>
       {/* 1. Storage Disconnected Warning Banner */}
-      {!connection &&
+      {needsStorageReconnect ? (
+        isOwner ? (
+          <TouchableOpacity
+            style={styles.warningBanner}
+            onPress={() => router.push(`/(app)/spaces/${spaceId}/connect-storage`)}
+          >
+            <Text style={styles.warningText}>
+              ⚠️ Google Drive 재인증이 필요해 업로드가 멈췄어요 [재인증하기]
+            </Text>
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.warningBanner}>
+            <Text style={styles.warningText}>
+              ⚠️ 업로드가 멈췄어요. 앨범 소유자에게 Google Drive 재인증을 요청해 주세요
+            </Text>
+          </View>
+        )
+      ) : !connection &&
         (isOwner ? (
           <TouchableOpacity
             style={styles.warningBanner}
