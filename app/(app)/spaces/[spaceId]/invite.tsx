@@ -17,6 +17,7 @@ import { useAuth } from '@/auth';
 import type { Invite, MemberRole } from '@/lib/database.types';
 import { supabase } from '@/lib/supabase';
 import { colors, radius, spacing, typography } from '@/lib/theme';
+import QRCode from 'react-native-qrcode-svg';
 
 type InviteRole = Exclude<MemberRole, 'owner'>;
 type InviteStatus = 'valid' | 'expired' | 'exhausted' | 'revoked';
@@ -397,6 +398,23 @@ export default function InviteScreen() {
               {formattedTokenDisplay}
             </Text>
           </View>
+
+          {/* QR 코드 표시 박스 */}
+          <View style={styles.qrSection}>
+            <View style={styles.qrCard}>
+              <QRCode
+                value={createdInvite.token}
+                size={160}
+                color="#000000"
+                backgroundColor="#FFFFFF"
+              />
+            </View>
+            <Text style={styles.qrGuideText}>
+              📷 상대방 기기의 카메라 앱으로 QR 코드를 스캔하여 초대 코드를 확인한 후,{'\n'}
+              가족 앨범 앱에서 '코드로 참여'에 입력해 주세요.
+            </Text>
+          </View>
+
           <Text style={styles.warningText}>
             ⚠️ 원문 코드는 보안상 지금 한 번만 표시됩니다. 닫은 뒤에는 다시 조회하거나 복사할 수 없습니다.
           </Text>
@@ -697,5 +715,28 @@ const styles = StyleSheet.create({
   },
   disabledBtn: {
     opacity: 0.55,
+  },
+  qrSection: {
+    alignItems: 'center',
+    marginVertical: spacing.md,
+  },
+  qrCard: {
+    backgroundColor: '#FFFFFF',
+    padding: spacing.md,
+    borderRadius: radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 2,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+  },
+  qrGuideText: {
+    color: colors.textMuted,
+    fontSize: 12,
+    lineHeight: 18,
+    textAlign: 'center',
+    marginTop: spacing.sm,
   },
 });
